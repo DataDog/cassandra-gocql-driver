@@ -144,6 +144,7 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 		return nil, errors.New("Can't use both Authenticator and AuthProvider in cluster config.")
 	}
 
+	// EJ TODO: session.ctx is used later in hostConnPool.connect, how is it set?
 	// TODO: we should take a context in here at some point
 	ctx, cancel := context.WithCancel(context.TODO())
 
@@ -287,6 +288,7 @@ func (s *Session) init() error {
 			continue
 		}
 
+		// zzz pool.addHost -> pool.fill -> pool.connect -> pool.session.connect()
 		atomic.AddInt64(&left, 1)
 		go func() {
 			s.pool.addHost(host)
@@ -323,7 +325,7 @@ func (s *Session) init() error {
 	readyPolicy, _ := s.policy.(ReadyPolicy)
 	// now loop over connectedCh until it's closed (meaning we've connected to all)
 	// or until the policy says we're ready
-	for range connectedCh {
+	for range connectedCh { ////// EJ: Blocked here
 		if readyPolicy != nil && readyPolicy.Ready() {
 			break
 		}
@@ -373,6 +375,7 @@ func (s *Session) init() error {
 // AwaitSchemaAgreement returns an error in case schema versions are not the same
 // after the timeout specified in MaxWaitSchemaAgreement elapses.
 func (s *Session) AwaitSchemaAgreement(ctx context.Context) error {
+	dbgPanicIfMissingTimeout(ctx)
 	if s.cfg.disableControlConn {
 		return errNoControl
 	}
@@ -593,6 +596,7 @@ func (s *Session) getConn() *Conn {
 
 // returns routing key indexes and type info
 func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyInfo, error) {
+	dbgPanicIfMissingTimeout(ctx)
 	s.routingKeyInfoCache.mu.Lock()
 
 	entry, cached := s.routingKeyInfoCache.lru.Get(stmt)
@@ -728,6 +732,7 @@ func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyI
 }
 
 func (b *Batch) execute(ctx context.Context, conn *Conn) *Iter {
+	dbgPanicIfMissingTimeout(ctx)
 	return conn.executeBatch(ctx, b)
 }
 
@@ -1121,6 +1126,7 @@ func (q *Query) Cancel() {
 }
 
 func (q *Query) execute(ctx context.Context, conn *Conn) *Iter {
+	dbgPanicIfMissingTimeout(ctx)
 	return conn.executeQuery(ctx, q)
 }
 

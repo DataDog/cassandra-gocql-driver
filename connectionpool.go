@@ -458,6 +458,7 @@ func (pool *hostConnPool) fill() {
 
 		if err != nil {
 			// probably unreachable host
+			// EJ TODO: We may be unlucky with a bad first host. Should be OK, we should have other pools?
 			pool.fillingStopped(err)
 			return
 		}
@@ -563,6 +564,10 @@ func (pool *hostConnPool) connect() (err error) {
 	var conn *Conn
 	reconnectionPolicy := pool.session.cfg.ReconnectionPolicy
 	for i := 0; i < reconnectionPolicy.GetMaxRetries(); i++ {
+		// EJ TODO: check for pool.session.ctx - how can it have timeout?
+		// EJ TODO: use pool.session.cfg.ConnectTimeout
+		// EJ: Logging shows we are looping through here.
+		dbgPanicIfMissingTimeout(pool.session.ctx)
 		conn, err = pool.session.connect(pool.session.ctx, pool.host, pool)
 		if err == nil {
 			break

@@ -60,6 +60,7 @@ type defaultHostDialer struct {
 }
 
 func (hd *defaultHostDialer) DialHost(ctx context.Context, host *HostInfo) (*DialedHost, error) {
+	dbgPanicIfMissingTimeout(ctx)
 	ip := host.ConnectAddress()
 	port := host.Port()
 
@@ -69,6 +70,8 @@ func (hd *defaultHostDialer) DialHost(ctx context.Context, host *HostInfo) (*Dia
 		return nil, fmt.Errorf("host missing port: %v", port)
 	}
 
+0	// EJ TODO: This is a network write
+	dbgPanicIfMissingTimeout(ctx)
 	connAddr := host.ConnectAddressAndPort()
 	conn, err := hd.dialer.DialContext(ctx, "tcp", connAddr)
 	if err != nil {
