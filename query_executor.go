@@ -26,9 +26,13 @@ package gocql
 
 import (
 	"context"
+	"runtime/debug"
 	"sync"
 	"time"
 )
+
+const stackTraceOnRetry = false
+const stackTraceOnRetryCount = 3
 
 type ExecutableQuery interface {
 	borrowForExecution()    // Used to ensure that the query stays alive for lifetime of a particular execution goroutine.
@@ -53,6 +57,7 @@ type queryExecutor struct {
 }
 
 func (q *queryExecutor) attemptQuery(ctx context.Context, qry ExecutableQuery, conn *Conn) *Iter {
+	dbgCheckMissingTimeout(ctx)
 	start := time.Now()
 	iter := qry.execute(ctx, conn)
 	end := time.Now()
@@ -64,6 +69,7 @@ func (q *queryExecutor) attemptQuery(ctx context.Context, qry ExecutableQuery, c
 
 func (q *queryExecutor) speculate(ctx context.Context, qry ExecutableQuery, sp SpeculativeExecutionPolicy,
 	hostIter NextHost, results chan *Iter) *Iter {
+	dbgCheckMissingTimeout(ctx)
 	ticker := time.NewTicker(sp.Delay())
 	defer ticker.Stop()
 
@@ -83,6 +89,7 @@ func (q *queryExecutor) speculate(ctx context.Context, qry ExecutableQuery, sp S
 }
 
 func (q *queryExecutor) executeQuery(qry ExecutableQuery) (*Iter, error) {
+	dbgCheckMissingTimeout(qry.Context())
 	hostIter := q.policy.Pick(qry)
 
 	// check if the query is not marked as idempotent, if
@@ -127,8 +134,13 @@ func (q *queryExecutor) executeQuery(qry ExecutableQuery) (*Iter, error) {
 }
 
 func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter NextHost) *Iter {
+	dbgCheckMissingTimeout(ctx)
 	selectedHost := hostIter()
 	rt := qry.retryPolicy()
+	dbgTryCount := 0
+	dbgTryAddrList := []string{}
+	dbgTryAddrPortList := []string{}
+	dbgTryHostIdList := []string{}
 
 	var lastErr error
 	var iter *Iter
@@ -151,6 +163,11 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 			continue
 		}
 
+		dbgTryCount++
+		dbgTryAddrList = append(dbgTryAddrList, conn.Address())
+		dbgTryAddrPortList = append(dbgTryAddrPortList, selectedHost.Info().ConnectAddressAndPort())
+		dbgTryHostIdList = append(dbgTryHostIdList, selectedHost.Info().hostId)
+
 		iter = q.attemptQuery(ctx, qry, conn)
 		iter.host = selectedHost.Info()
 		// Update host
@@ -158,6 +175,12 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 		case context.Canceled, context.DeadlineExceeded, ErrNotFound:
 			// those errors represents logical errors, they should not count
 			// toward removing a node from the pool
+			conn.session.logger.Printf("dbg165 query_executor.go: completed try [%d], not retrying because err: %v, addr: %v, addrPort: %v, hostId: %v",
+				dbgTryCount,
+				iter.err,
+				dbgTryAddrList,
+				dbgTryAddrPortList,
+				dbgTryHostIdList)
 			selectedHost.Mark(nil)
 			return iter
 		default:
@@ -172,6 +195,17 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 
 		attemptsReached := !rt.Attempt(qry)
 		retryType := rt.GetRetryType(iter.err)
+
+		conn.session.logger.Printf("dbg181 query_executor.go: completed try [%d] retryType: %s, err: %s, addr: %v, addrPort: %v, hostId: %v",
+			dbgTryCount,
+			RetryTypeName[retryType],
+			iter.err,
+			dbgTryAddrList,
+			dbgTryAddrPortList,
+			dbgTryHostIdList)
+		if stackTraceOnRetry && dbgTryCount == stackTraceOnRetryCount {
+			conn.session.logger.Print("dbg190: query_executor.go: stack: " + string(debug.Stack()))
+		}
 
 		var stopRetries bool
 
@@ -208,6 +242,7 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 }
 
 func (q *queryExecutor) run(ctx context.Context, qry ExecutableQuery, hostIter NextHost, results chan<- *Iter) {
+	dbgCheckMissingTimeout(ctx)
 	select {
 	case results <- q.do(ctx, qry, hostIter):
 	case <-ctx.Done():

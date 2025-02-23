@@ -375,7 +375,7 @@ func (s *Session) init() error {
 // AwaitSchemaAgreement returns an error in case schema versions are not the same
 // after the timeout specified in MaxWaitSchemaAgreement elapses.
 func (s *Session) AwaitSchemaAgreement(ctx context.Context) error {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	if s.cfg.disableControlConn {
 		return errNoControl
 	}
@@ -596,7 +596,7 @@ func (s *Session) getConn() *Conn {
 
 // returns routing key indexes and type info
 func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyInfo, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	s.routingKeyInfoCache.mu.Lock()
 
 	entry, cached := s.routingKeyInfoCache.lru.Get(stmt)
@@ -732,7 +732,7 @@ func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyI
 }
 
 func (b *Batch) execute(ctx context.Context, conn *Conn) *Iter {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	return conn.executeBatch(ctx, b)
 }
 
@@ -1126,11 +1126,12 @@ func (q *Query) Cancel() {
 }
 
 func (q *Query) execute(ctx context.Context, conn *Conn) *Iter {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	return conn.executeQuery(ctx, q)
 }
 
 func (q *Query) attempt(keyspace string, end, start time.Time, iter *Iter, host *HostInfo) {
+	dbgCheckMissingTimeout(q.Context())
 	latency := end.Sub(start)
 	attempt, metricsForHost := q.metrics.attempt(1, latency, host, q.observer != nil)
 
@@ -1326,6 +1327,7 @@ func isUseStatement(stmt string) bool {
 // Iter executes the query and returns an iterator capable of iterating
 // over all results.
 func (q *Query) Iter() *Iter {
+	dbgCheckMissingTimeout(q.context)
 	if isUseStatement(q.stmt) {
 		return &Iter{err: ErrUseStmt}
 	}
@@ -1881,6 +1883,7 @@ func (b *Batch) SpeculativeExecutionPolicy(sp SpeculativeExecutionPolicy) *Batch
 
 // Query adds the query to the batch operation
 func (b *Batch) Query(stmt string, args ...interface{}) *Batch {
+	dbgCheckMissingTimeout(b.context)
 	b.Entries = append(b.Entries, BatchEntry{Stmt: stmt, Args: args})
 	return b
 }
@@ -1964,6 +1967,7 @@ func (b *Batch) WithTimestamp(timestamp int64) *Batch {
 }
 
 func (b *Batch) attempt(keyspace string, end, start time.Time, iter *Iter, host *HostInfo) {
+	dbgCheckMissingTimeout(b.Context())
 	latency := end.Sub(start)
 	attempt, metricsForHost := b.metrics.attempt(1, latency, host, b.observer != nil)
 

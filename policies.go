@@ -131,6 +131,13 @@ const (
 	Rethrow       RetryType = 0x03 // raise error and stop retrying
 )
 
+var RetryTypeName = map[RetryType]string{
+	Retry:         "Retry",
+	RetryNextHost: "RetryNextHost",
+	Ignore:        "Ignore",
+	Rethrow:       "Rethrow",
+}
+
 // ErrUnknownRetryType is returned if the retry policy returns a retry type
 // unknown to the query executor.
 var ErrUnknownRetryType = errors.New("unknown retry type returned by retry policy")

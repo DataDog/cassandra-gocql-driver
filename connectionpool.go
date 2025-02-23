@@ -567,7 +567,7 @@ func (pool *hostConnPool) connect() (err error) {
 		// EJ TODO: check for pool.session.ctx - how can it have timeout?
 		// EJ TODO: use pool.session.cfg.ConnectTimeout
 		// EJ: Logging shows we are looping through here.
-		dbgPanicIfMissingTimeout(pool.session.ctx)
+		dbgCheckMissingTimeout(pool.session.ctx)
 		conn, err = pool.session.connect(pool.session.ctx, pool.host, pool)
 		if err == nil {
 			break

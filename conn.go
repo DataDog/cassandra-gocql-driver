@@ -45,6 +45,8 @@ import (
 	"github.com/gocql/gocql/internal/streams"
 )
 
+const dbgMissingTimeoutStackDumpEnabled = true
+
 // approve the authenticator with the list of allowed authenticators. If the provided list is empty,
 // the given authenticator is allowed.
 func approve(authenticator string, approvedAuthenticators []string) bool {
@@ -218,13 +220,13 @@ type Conn struct {
 func (s *Session) connect(ctx context.Context, host *HostInfo, errorHandler ConnErrorHandler) (*Conn, error) {
 	// EJ TODO: ctx comes from session, which does not have a deadline.
 	// But I think later down the stack they grab the session timeout values.
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	return s.dial(ctx, host, s.connCfg, errorHandler)
 }
 
 // dial establishes a connection to a Cassandra node and notifies the session's connectObserver.
 func (s *Session) dial(ctx context.Context, host *HostInfo, connConfig *ConnConfig, errorHandler ConnErrorHandler) (*Conn, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	var obs ObservedConnect
 	if s.connectObserver != nil {
 		obs.Host = host
@@ -246,7 +248,7 @@ func (s *Session) dial(ctx context.Context, host *HostInfo, connConfig *ConnConf
 //
 // dialWithoutObserver does not notify the connection observer, so you most probably want to call dial() instead.
 func (s *Session) dialWithoutObserver(ctx context.Context, host *HostInfo, cfg *ConnConfig, errorHandler ConnErrorHandler) (*Conn, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	dialedHost, err := cfg.HostDialer.DialHost(ctx, host)
 	if err != nil {
 		return nil, err
@@ -295,7 +297,7 @@ func (s *Session) dialWithoutObserver(ctx context.Context, host *HostInfo, cfg *
 }
 
 func (c *Conn) init(ctx context.Context, dialedHost *DialedHost) error {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	if c.session.cfg.AuthProvider != nil {
 		var err error
 		c.auth, err = c.cfg.AuthProvider(c.host)
@@ -370,13 +372,13 @@ func (s *startupCoordinator) setupConn(ctx context.Context) error {
 	} else {
 		ctx, cancel = context.WithCancel(ctx)
 	}
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	defer cancel()
 
 	startupErr := make(chan error)
 	go func() {
 		for range s.frameTicker {
-			dbgPanicIfMissingTimeout(ctx)
+			dbgCheckMissingTimeout(ctx)
 			err := s.conn.recv(ctx)
 			if err != nil {
 				select {
@@ -411,14 +413,14 @@ func (s *startupCoordinator) setupConn(ctx context.Context) error {
 }
 
 func (s *startupCoordinator) write(ctx context.Context, frame frameBuilder) (frame, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	select {
 	case s.frameTicker <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	framer, err := s.conn.exec(ctx, frame, nil)
 	if err != nil {
 		return nil, err
@@ -428,7 +430,7 @@ func (s *startupCoordinator) write(ctx context.Context, frame frameBuilder) (fra
 }
 
 func (s *startupCoordinator) options(ctx context.Context) error {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	frame, err := s.write(ctx, &writeOptionsFrame{})
 	if err != nil {
 		return err
@@ -443,7 +445,7 @@ func (s *startupCoordinator) options(ctx context.Context) error {
 }
 
 func (s *startupCoordinator) startup(ctx context.Context, supported map[string][]string) error {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	m := map[string]string{
 		"CQL_VERSION":    s.conn.cfg.CQLVersion,
 		"DRIVER_NAME":    driverName,
@@ -465,7 +467,7 @@ func (s *startupCoordinator) startup(ctx context.Context, supported map[string][
 		}
 	}
 
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	frame, err := s.write(ctx, &writeStartupFrame{opts: m})
 	if err != nil {
 		return err
@@ -484,7 +486,7 @@ func (s *startupCoordinator) startup(ctx context.Context, supported map[string][
 }
 
 func (s *startupCoordinator) authenticateHandshake(ctx context.Context, authFrame *authenticateFrame) error {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	if s.conn.auth == nil {
 		return fmt.Errorf("authentication required (using %q)", authFrame.class)
 	}
@@ -547,7 +549,7 @@ func (c *Conn) closeWithError(err error) {
 		c.calls = nil
 	}
 	c.mu.Unlock()
-	c.logger.Printf("dbg500:   gocql: Conn.closeWithError : addr:%v, c.timeout:%.3fs, c.writeTimeout:%.3fs, c.cfg.Timeout:%.3fs, c.cfg.WriteTimeout:%.3fs, c.cfg.ConnectTimeout:%.3fs, outstanding call requests:%d, outstanding streams:%d, num timeouts:%d, err:%v\n",
+	c.logger.Printf("dbg500:   gocql: Conn.closeWithError : addr:%v, c.timeout:%.3fs, c.writeTimeout:%.3fs, c.cfg.Timeout:%.3fs, c.cfg.WriteTimeout:%.3fs, c.cfg.ConnectTimeout:%.3fs, outstanding call requests:%d, num streams:%d, num available streams:%d, num timeouts:%d, err:%v\n",
 		c.addr,
 		c.timeout.Seconds(),
 		c.writeTimeout.Seconds(),
@@ -555,7 +557,8 @@ func (c *Conn) closeWithError(err error) {
 		c.cfg.WriteTimeout.Seconds(),
 		c.cfg.ConnectTimeout.Seconds(),
 		len(callsToClose),
-		c.streams.InUseStreams(),
+		c.streams.NumStreams,
+		c.streams.Available(),
 		c.timeouts,
 		err)
 
@@ -853,7 +856,7 @@ type deadlineContextWriter struct {
 
 // writeContext implements contextWriter.
 func (c *deadlineContextWriter) writeContext(ctx context.Context, p []byte) (int, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	select {
 	case <-ctx.Done():
 		return 0, ctx.Err()
@@ -917,7 +920,7 @@ type writeResult struct {
 
 // writeContext implements contextWriter.
 func (w *writeCoalescer) writeContext(ctx context.Context, p []byte) (int, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	resultChan := make(chan writeResult, 1)
 	wr := writeRequest{
 		resultChan: resultChan,
@@ -1050,14 +1053,15 @@ func (c *Conn) addCall(call *callReq) error {
 	return nil
 }
 
-func dbgPanicIfMissingTimeout(ctx context.Context) {
-	if ctx != nil {
-		if _, ok := ctx.Deadline(); ok {
-			return
+func dbgCheckMissingTimeout(ctx context.Context) {
+	if dbgMissingTimeoutStackDumpEnabled {
+		if ctx != nil {
+			if _, ok := ctx.Deadline(); ok {
+				return
+			}
 		}
+		(&defaultLogger{}).Print("cassandsra-gocql-driver: context is missing timeout: stack: " + string(debug.Stack()))
 	}
-	// panic("Missing timeout")
-	fmt.Println("cassandsra-gocql-driver: context is missing timeout: stack: " + string(debug.Stack()))
 }
 
 func dbgGetTimeoutFromCtx(ctx context.Context) time.Duration {
@@ -1070,38 +1074,56 @@ func dbgGetTimeoutFromCtx(ctx context.Context) time.Duration {
 	return timeout
 }
 
-var dbgRandomMutex sync.Mutex
-var dbgRandom = rand.New(rand.NewSource(123456789))
+var dbgSampledLogEnabled = true
+var dbgSampledLogMutex sync.Mutex
+var dbgSampledLogRandom = rand.New(rand.NewSource(1))
+var dbgSampledLogNextTime = time.Time{}
+var dbgSampledLogPeriod = 5 * time.Second
+var dbgSampledLogJitter = 2 * time.Second
 
-// Return True if we should log. Currently it is just random.
-func dbgShouldLog() bool {
-	const thresholdFraction = 5.0 / 100.0
-	dbgRandomMutex.Lock()
-	var x = dbgRandom.Float64()
-	dbgRandomMutex.Unlock()
-	return x < thresholdFraction
+// Return True if we should log. We sample at an approximate rate.
+func dbgShouldLog() (bool, string) {
+	if !dbgSampledLogEnabled {
+		return false, ""
+	}
+
+	dbgSampledLogMutex.Lock()
+	defer dbgSampledLogMutex.Unlock()
+
+	now := time.Now()
+	if now.Before(dbgSampledLogNextTime) {
+		return false, ""
+	}
+
+	dbgSampledLogNextTime = now.Add(dbgSampledLogPeriod + time.Duration(dbgSampledLogRandom.Float64()*float64(dbgSampledLogJitter)))
+	identifierString := fmt.Sprintf("%08x", dbgSampledLogRandom.Int31())
+	return true, identifierString
 }
+
 func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*framer, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	c.mu.Lock()
 	dbgNumCalls := len(c.calls)
 	c.mu.Unlock()
 	// Note that the should-log decision applies to the rest of the function.
-	var dbgShouldLog = dbgShouldLog()
+	var dbgShouldLog, logIdentifier = dbgShouldLog()
 	if dbgShouldLog {
-		c.logger.Printf("dbg1024a: gocql: Conn.exec, beg, addr:%s, c.timeout:%.3fs, c.writeTimeout:%.3fs, ctx timeout:%.3fs, outstanding call requests:%d, in use streams:%d, num timeouts:%d\n",
+		c.logger.Printf("dbg1024a: gocql: id:%s Conn.exec, beg, addr:%s, c.timeout:%.3fs, c.writeTimeout:%.3fs, ctx timeout:%.3fs, outstanding call requests:%d, num streams:%d, num available streams:%d, num timeouts:%d\n",
+			logIdentifier,
 			c.addr,
 			c.timeout.Seconds(),
 			c.writeTimeout.Seconds(),
 			dbgGetTimeoutFromCtx(ctx).Seconds(),
 			dbgNumCalls,
-			c.streams.InUseStreams(),
+			c.streams.NumStreams,
+			c.streams.Available(),
 			c.timeouts)
 	}
 	var dbgLoggingStream int
 	defer func() {
 		if dbgShouldLog {
-			c.logger.Printf("dbg1024d: gocql: Conn.exec, end, addr:%s, stream:%d\n",
+			c.logger.Printf("dbg1024d: gocql: id:%s Conn.exec, completed, addr:%s, stream:%d\n",
+				logIdentifier,
 				c.addr,
 				dbgLoggingStream)
 		}
@@ -1170,13 +1192,15 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 		dbgLoggingStream = framer.header.stream
 	}
 	if dbgShouldLog {
-		c.logger.Printf("dbg1024b: gocql: Conn.exec: mid, addr:%s, stream:%d, pre  write to network\n",
+		c.logger.Printf("dbg1024b: gocql: id:%s Conn.exec: mid, addr:%s, stream:%d, pre  write to network\n",
+			logIdentifier,
 			c.addr,
 			dbgLoggingStream)
 	}
 	n, err := c.w.writeContext(ctx, framer.buf)
 	if dbgShouldLog {
-		c.logger.Printf("dbg1024c: gocql: Conn.exec: mid, addr:%s, stream:%d, post write to network\n",
+		c.logger.Printf("dbg1024c: gocql: id:%s Conn.exec: mid, addr:%s, stream:%d, post write to network\n",
+			logIdentifier,
 			c.addr,
 			dbgLoggingStream)
 	}
@@ -1234,7 +1258,8 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 	// service calls recv, which reads a frame and calls the response callback.
 	// Or recv might never get data and call.resp might never get populated.
 	if dbgShouldLog {
-		c.logger.Printf("dbg1024c: gocql: Conn.exec: mid, addr:%s, stream:%d, pre read from network, ctx timeout:%.3fs, conn.ctx timeout:%.3fs\n",
+		c.logger.Printf("dbg1024d: gocql: id:%s Conn.exec: mid, addr:%s, stream:%d, pre read from network, ctx timeout:%.3fs, conn.ctx timeout:%.3fs\n",
+			logIdentifier,
 			c.addr,
 			dbgLoggingStream,
 			dbgGetTimeoutFromCtx(ctx).Seconds(),
@@ -1268,20 +1293,26 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 		return resp.framer, nil
 	case <-timeoutCh:
 		if dbgShouldLog {
-			c.logger.Printf("dbg1190: conn.Exec: exit timeout, err:%v\n", ErrTimeoutNoResponse)
+			c.logger.Printf("dbg1190: gocql id:%s conn.Exec: exit timeout, err:%v\n",
+				logIdentifier,
+				ErrTimeoutNoResponse)
 		}
 		close(call.timeout)
 		c.handleTimeout()
 		return nil, ErrTimeoutNoResponse
 	case <-ctxDone:
 		if dbgShouldLog {
-			c.logger.Printf("dbg1190: conn.Exec: exit ctxDone, err:%v\n", ctx.Err())
+			c.logger.Printf("dbg1190: gocql id:%s conn.Exec: exit ctxDone, err:%v\n",
+				logIdentifier,
+				ctx.Err())
 		}
 		close(call.timeout)
 		return nil, ctx.Err()
 	case <-c.ctx.Done():
 		if dbgShouldLog {
-			c.logger.Printf("dbg1190: conn.Exec: exit c.ctx.Done, err:%v\n", ErrConnectionClosed)
+			c.logger.Printf("dbg1190: gocql id:%s conn.Exec: exit c.ctx.Done, err:%v\n",
+				logIdentifier,
+				ErrConnectionClosed)
 		}
 		close(call.timeout)
 		return nil, ErrConnectionClosed
@@ -1348,7 +1379,7 @@ type inflightPrepare struct {
 }
 
 func (c *Conn) prepareStatement(ctx context.Context, stmt string, tracer Tracer) (*preparedStatment, error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	stmtCacheKey := c.session.stmtsLRU.keyFor(c.host.HostID(), c.currentKeyspace, stmt)
 	flight, ok := c.session.stmtsLRU.execIfMissing(stmtCacheKey, func(lru *lru.Cache) *inflightPrepare {
 		flight := &inflightPrepare{
@@ -1444,7 +1475,7 @@ func marshalQueryValue(typ TypeInfo, value interface{}, dst *queryValues) error 
 }
 
 func (c *Conn) executeQuery(ctx context.Context, qry *Query) *Iter {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	params := queryParams{
 		consistency: qry.cons,
 	}
@@ -1654,7 +1685,7 @@ func (c *Conn) UseKeyspace(keyspace string) error {
 }
 
 func (c *Conn) executeBatch(ctx context.Context, batch *Batch) *Iter {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	if c.version == protoVersion1 {
 		return &Iter{err: ErrUnsupported}
 	}
@@ -1759,7 +1790,7 @@ func (c *Conn) executeBatch(ctx context.Context, batch *Batch) *Iter {
 }
 
 func (c *Conn) query(ctx context.Context, statement string, values ...interface{}) (iter *Iter) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	q := c.session.Query(statement, values...).Consistency(One).Trace(nil)
 	q.skipPrepare = true
 	q.disableSkipMetadata = true
@@ -1769,7 +1800,7 @@ func (c *Conn) query(ctx context.Context, statement string, values ...interface{
 }
 
 func (c *Conn) querySystemPeers(ctx context.Context, version cassVersion) *Iter {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	const (
 		peerSchema    = "SELECT * FROM system.peers"
 		peerV2Schemas = "SELECT * FROM system.peers_v2"
@@ -1805,7 +1836,7 @@ func (c *Conn) querySystemLocal(ctx context.Context) *Iter {
 }
 
 func (c *Conn) awaitSchemaAgreement(ctx context.Context) (err error) {
-	dbgPanicIfMissingTimeout(ctx)
+	dbgCheckMissingTimeout(ctx)
 	const localSchemas = "SELECT schema_version FROM system.local WHERE key='local'"
 
 	var versions map[string]struct{}
