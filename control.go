@@ -263,7 +263,9 @@ func (c *controlConn) connect(hosts []*HostInfo) error {
 	for _, host := range hosts {
 		conn, err = c.session.dial(c.session.ctx, host, &cfg, c)
 		if err != nil {
+			// EJ: Note that this is probably OK unless we see "unable to connect to initial hosts" below.
 			c.session.logger.Printf("gocql: unable to dial control conn %v:%v: %v\n", host.ConnectAddress(), host.Port(), err)
+			// (&defaultLogger{}).Print("cassandsra-gocql-driver: stack: " + string(debug.Stack()))
 			continue
 		}
 		err = c.setupConn(conn)
@@ -425,16 +427,22 @@ func (c *controlConn) attemptReconnectToAnyOfHosts(hosts []*HostInfo) (*Conn, er
 	for _, host := range hosts {
 		conn, err = c.session.connect(c.session.ctx, host, c)
 		if err != nil {
+			// EJ: Not clear if this is a problem or not, until below.
 			c.session.logger.Printf("gocql: unable to dial control conn %v:%v: %v\n", host.ConnectAddress(), host.Port(), err)
+			// (&defaultLogger{}).Print("cassandsra-gocql-driver: stack: " + string(debug.Stack()))
 			continue
 		}
 		err = c.setupConn(conn)
 		if err == nil {
 			break
 		}
+		// EJ: This would be bad.
 		c.session.logger.Printf("gocql: unable setup control conn %v:%v: %v\n", host.ConnectAddress(), host.Port(), err)
 		conn.Close()
 		conn = nil
+	}
+	if conn == nil || err != nil {
+		c.session.logger.Printf("gocql: attemptReconnectToAnyOfHosts: unable to setup control conn to any of the %d hosts, last err: %v\n", len(hosts), err)
 	}
 	return conn, err
 }

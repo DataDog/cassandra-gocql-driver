@@ -46,6 +46,7 @@ import (
 )
 
 const dbgMissingTimeoutStackDumpEnabled = true
+const dbgDefaultTimeoutIfMissing = 5 * time.Second
 
 // approve the authenticator with the list of allowed authenticators. If the provided list is empty,
 // the given authenticator is allowed.
@@ -226,6 +227,7 @@ func (s *Session) connect(ctx context.Context, host *HostInfo, errorHandler Conn
 
 // dial establishes a connection to a Cassandra node and notifies the session's connectObserver.
 func (s *Session) dial(ctx context.Context, host *HostInfo, connConfig *ConnConfig, errorHandler ConnErrorHandler) (*Conn, error) {
+	// EJ TODO: we hit this from cqldriver-probe
 	dbgCheckMissingTimeout(ctx)
 	var obs ObservedConnect
 	if s.connectObserver != nil {
@@ -248,9 +250,14 @@ func (s *Session) dial(ctx context.Context, host *HostInfo, connConfig *ConnConf
 //
 // dialWithoutObserver does not notify the connection observer, so you most probably want to call dial() instead.
 func (s *Session) dialWithoutObserver(ctx context.Context, host *HostInfo, cfg *ConnConfig, errorHandler ConnErrorHandler) (*Conn, error) {
+	// EJ TODO: Should we propagate cg.ConnectTimeout?
 	dbgCheckMissingTimeout(ctx)
+	t0 := time.Now()
+	s.logger.Printf("gocql session.dialWithoutObserver: pre: host addr: %v", host.ConnectAddress())
+
 	dialedHost, err := cfg.HostDialer.DialHost(ctx, host)
 	if err != nil {
+		s.logger.Printf("gocql session.dialWithoutObserver: post: host addr: %v, err: %s, took %.3f sec", host.ConnectAddress(), err, time.Since(t0).Seconds())
 		return nil, err
 	}
 
@@ -290,14 +297,29 @@ func (s *Session) dialWithoutObserver(ctx context.Context, host *HostInfo, cfg *
 	if err := c.init(ctx, dialedHost); err != nil {
 		cancel()
 		c.Close()
+		s.logger.Printf("gocql session.dialWithoutObserver: post: host addr: %v, err: %s, took %.3f sec", host.ConnectAddress(), err, time.Since(t0).Seconds())
 		return nil, err
 	}
 
+	s.logger.Printf("gocql session.dialWithoutObserver: post: host addr: %v, success, took %.3f sec", host.ConnectAddress(), time.Since(t0).Seconds())
 	return c, nil
 }
 
 func (c *Conn) init(ctx context.Context, dialedHost *DialedHost) error {
+	// EJ: I think we might not have a connection here
+	// EJ TODO: we hit this from cqldriver-probe
 	dbgCheckMissingTimeout(ctx)
+
+	t0 := time.Now()
+	c.logger.Printf("gocql Conn.init: pre: host addr: %v", c.host.ConnectAddress())
+	defer c.logger.Printf("gocql Conn.init: post: host addr: %v, took %.3f sec", c.host.ConnectAddress(), time.Since(t0).Seconds())
+
+	// EJ: Add this later.
+	// if dbgGetTimeoutFromCtx() <= 0 {
+	// 	c.logger.Printf("Missing timeout in Conn.init, using %v", dbgDefaultTimeoutIfMissing)
+	// 	ctx, _ = context.WithDeadline(ctx, time.Now().Add(dbgDefaultTimeoutIfMissing))
+	// }
+
 	if c.session.cfg.AuthProvider != nil {
 		var err error
 		c.auth, err = c.cfg.AuthProvider(c.host)

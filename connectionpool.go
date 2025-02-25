@@ -411,6 +411,9 @@ func (pool *hostConnPool) Close() {
 
 // Fill the connection pool
 func (pool *hostConnPool) fill() {
+	pool.logger.Printf("gocql hostConnPool.fill: pre, conns:%d, size:%d", pool.host, len(pool.conns), pool.size)
+	defer pool.logger.Printf("gocql hostConnPool.fill: post, conns:%d, size:%d", len(pool.conns), pool.size)
+
 	pool.mu.RLock()
 	// avoid filling a closed pool, or concurrent filling
 	if pool.closed || pool.filling {
