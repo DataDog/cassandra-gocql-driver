@@ -1077,11 +1077,37 @@ func (c *Conn) addCall(call *callReq) error {
 
 func dbgCheckMissingTimeout(ctx context.Context) {
 	if dbgMissingTimeoutStackDumpEnabled {
+
+		// This fills the log. Useful for looking further to make sure it is propagated from connection timeout etc.
+		if true {
+			return
+		}
+
 		if ctx != nil {
 			if _, ok := ctx.Deadline(); ok {
 				return
 			}
 		}
+
+		stack := string(debug.Stack())
+
+		// runtime/debug.Stack()
+		// 		GOROOT/src/runtime/debug/stack.go:26 +0x5e
+		// github.com/gocql/gocql.dbgCheckMissingTimeout({0x170fb20?, 0x3641180?})
+		// 		external/com_github_gocql_gocql/conn.go:1085 +0x3c
+		// github.com/gocql/gocql.(*Conn).exec(0xc00011a640, {0x170fb20, 0x3641180}, {0x16ec9e0, 0x3641180}, {0x0, 0x0?})
+		// 		external/com_github_gocql_gocql/conn.go:1126 +0x75
+		// github.com/gocql/gocql.(*controlConn).writeFrame(0xc00029d770?, {0x16ec9e0?, 0x3641180?})
+		// 		external/com_github_gocql_gocql/control.go:476 +0x91
+		// github.com/gocql/gocql.(*controlConn).heartBeat(0xc0000fe780?)
+		// 		external/com_github_gocql_gocql/control.go:106 +0x106
+		// created by github.com/gocql/gocql.(*controlConn).connect in goroutine 1
+		// 		external/com_github_gocql_gocql/control.go:286 +0x533
+		if strings.Contains(stack, "heartBeat") {
+			// We should look at this later, but fills the logs with cqldriver-probe.
+			return
+		}
+
 		(&defaultLogger{}).Print("cassandsra-gocql-driver: context is missing timeout: stack: " + string(debug.Stack()))
 	}
 }
