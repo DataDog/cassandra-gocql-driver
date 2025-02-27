@@ -34,6 +34,11 @@ import (
 const stackTraceOnRetry = false
 const stackTraceOnRetryCount = 3
 
+var dbgLastStackDbg165 = time.Time{}
+var dbgLastStackDbg181 = time.Time{}
+var dbgStackPeriod165 = time.Duration(10 * time.Second)
+var dbgStackPeriod181 = time.Duration(10 * time.Second)
+
 type ExecutableQuery interface {
 	borrowForExecution()    // Used to ensure that the query stays alive for lifetime of a particular execution goroutine.
 	releaseAfterExecution() // Used when a goroutine finishes its execution attempts, either with ok result or an error.
@@ -177,13 +182,17 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 		case context.Canceled, context.DeadlineExceeded, ErrNotFound:
 			// those errors represents logical errors, they should not count
 			// toward removing a node from the pool
-			conn.session.logger.Printf("dbg165 query_executor.go: completed try [%d], not retrying because err: %v, addr: %v, addrPort: %v, hostId: %v, took %.3f sec",
+			conn.session.logger.Printf("dbg165 query_executor.go: queryExecutor.do: completed try [%d], not retrying because err: %v, addr: %v, addrPort: %v, hostId: %v, took %.3f sec",
 				dbgTryCount,
 				iter.err,
 				dbgTryAddrList,
 				dbgTryAddrPortList,
 				dbgTryHostIdList,
 				time.Since(t0).Seconds())
+			if time.Since(dbgLastStackDbg165) > dbgStackPeriod165 {
+				dbgLastStackDbg165 = time.Now()
+				conn.session.logger.Print("dbg165 query_executor.go: stack: " + string(debug.Stack()))
+			}
 			selectedHost.Mark(nil)
 			return iter
 		default:
@@ -199,7 +208,7 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 		attemptsReached := !rt.Attempt(qry)
 		retryType := rt.GetRetryType(iter.err)
 
-		conn.session.logger.Printf("dbg181 query_executor.go: completed try [%d] retryType: %s, err: %s, addr: %v, addrPort: %v, hostId: %v, time so far: %.3f sec",
+		conn.session.logger.Printf("dbg181 query_executor.go: queryExecutor.do: completed try [%d] retryType: %s, err: %s, addr: %v, addrPort: %v, hostId: %v, time so far: %.3f sec",
 			dbgTryCount,
 			RetryTypeName[retryType],
 			iter.err,
@@ -207,8 +216,9 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 			dbgTryAddrPortList,
 			dbgTryHostIdList,
 			time.Since(t0).Seconds())
-		if stackTraceOnRetry && dbgTryCount == stackTraceOnRetryCount {
-			conn.session.logger.Print("dbg190: query_executor.go: stack: " + string(debug.Stack()))
+		if time.Since(dbgLastStackDbg181) > dbgStackPeriod181 || stackTraceOnRetry && dbgTryCount == stackTraceOnRetryCount {
+			dbgLastStackDbg181 = time.Now()
+			conn.session.logger.Print("dbg181 query_executor.go: stack: " + string(debug.Stack()))
 		}
 
 		var stopRetries bool

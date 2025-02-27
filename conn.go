@@ -1150,6 +1150,7 @@ func dbgShouldLog() (bool, string) {
 
 func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*framer, error) {
 	dbgCheckMissingTimeout(ctx)
+	t0 := time.Now()
 	c.mu.Lock()
 	dbgNumCalls := len(c.calls)
 	c.mu.Unlock()
@@ -1170,13 +1171,18 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 	var dbgLoggingStream int
 	defer func() {
 		if dbgShouldLog {
-			c.logger.Printf("dbg1024d: gocql: id:%s Conn.exec, completed, addr:%s, stream:%d\n",
+			c.logger.Printf("dbg1024d: gocql: id:%s Conn.exec, completed, addr:%s, stream:%d, took %.3f sec\n",
 				logIdentifier,
 				c.addr,
-				dbgLoggingStream)
+				dbgLoggingStream,
+				time.Since(t0))
 		}
 	}()
 	if ctxErr := ctx.Err(); ctxErr != nil {
+		c.logger.Printf("dbg1181 conn.go: Conn.exec, error before doing work, err: %v, addr: %v, took %.3f sec",
+			ctxErr,
+			c.addr,
+			time.Since(t0).Seconds())
 		return nil, ctxErr
 	}
 
@@ -1200,6 +1206,10 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 	}
 
 	if err := c.addCall(call); err != nil {
+		c.logger.Printf("dbg1208 conn.go: Conn.exec, calling c.addCall, err: %v, addr: %v, took %.3f sec",
+			err,
+			c.addr,
+			time.Since(t0).Seconds())
 		return nil, err
 	}
 
@@ -1219,6 +1229,10 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 
 	err := req.buildFrame(framer, stream)
 	if err != nil {
+		c.logger.Printf("dbg1231a conn.go: Conn.exec, calling req.buildFrame, err: %v, addr: %v, took %.3f sec",
+			err,
+			c.addr,
+			time.Since(t0).Seconds())
 		// closeWithError will block waiting for this stream to either receive a response
 		// or for us to timeout.
 		close(call.timeout)
@@ -1232,6 +1246,10 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 		// We need to release the stream after we remove the call from c.calls, otherwise the existingCall != nil
 		// check above could fail.
 		c.releaseStream(call)
+		c.logger.Printf("dbg1231b conn.go: Conn.exec, calling req.buildFrame, err: %v, addr: %v, took %.3f sec",
+			err,
+			c.addr,
+			time.Since(t0).Seconds())
 		return nil, err
 	}
 
@@ -1276,6 +1294,10 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 			// send a frame on, with all the streams used up and not returned.
 			c.closeWithError(err)
 		}
+		c.logger.Printf("dbg1208 conn.go: Conn.exec, calling c.w.writeContext, err: %v, addr: %v, took %.3f sec",
+			err,
+			c.addr,
+			time.Since(t0).Seconds())
 		return nil, err
 	}
 
@@ -1301,6 +1323,7 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 	if ctx != nil {
 		ctxDone = ctx.Done()
 	}
+	tCreateCtxDone := time.Now()
 
 	// This is where we block for the reply or timeout.
 	// service calls recv, which reads a frame and calls the response callback.
@@ -1324,6 +1347,10 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 				// connection to close.
 				c.releaseStream(call)
 			}
+			c.logger.Printf("dbg1208 conn.go: Conn.exec, getting from channel call.resp, err: %v, addr: %v, took %.3f sec",
+				resp.err,
+				c.addr,
+				time.Since(t0).Seconds())
 			return nil, resp.err
 		}
 		// dont release the stream if detect a timeout as another request can reuse
@@ -1355,6 +1382,11 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 				ctx.Err())
 		}
 		close(call.timeout)
+		c.logger.Printf("dbg1373 conn.go: Conn.exec, closed channel ctxDone, err: %v, addr: %v, took %.3f sec, since ctxDone %.3f sec",
+			ctx.Err(),
+			c.addr,
+			time.Since(t0).Seconds(),
+			time.Since(tCreateCtxDone).Seconds())
 		return nil, ctx.Err()
 	case <-c.ctx.Done():
 		if dbgShouldLog {
@@ -1363,6 +1395,10 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 				ErrConnectionClosed)
 		}
 		close(call.timeout)
+		c.logger.Printf("dbg1387 conn.go: Conn.exec, closed channel c.ctx.Done, err: %v, addr: %v, took %.3f sec",
+			ErrConnectionClosed,
+			c.addr,
+			time.Since(t0).Seconds())
 		return nil, ErrConnectionClosed
 	}
 }
