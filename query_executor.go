@@ -59,9 +59,10 @@ type queryExecutor struct {
 func (q *queryExecutor) attemptQuery(ctx context.Context, qry ExecutableQuery, conn *Conn) *Iter {
 	dbgCheckMissingTimeout(ctx)
 	start := time.Now()
-	iter := qry.execute(ctx, conn)
+	iter := qry.execute(ctx, conn) // See Conn.executeQuery
 	end := time.Now()
 
+	// Attempt calls the observer and metrics.
 	qry.attempt(q.pool.keyspace, end, start, iter, conn.host)
 
 	return iter
@@ -141,6 +142,7 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 	dbgTryAddrList := []string{}
 	dbgTryAddrPortList := []string{}
 	dbgTryHostIdList := []string{}
+	t0 := time.Now()
 
 	var lastErr error
 	var iter *Iter
@@ -175,12 +177,13 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 		case context.Canceled, context.DeadlineExceeded, ErrNotFound:
 			// those errors represents logical errors, they should not count
 			// toward removing a node from the pool
-			conn.session.logger.Printf("dbg165 query_executor.go: completed try [%d], not retrying because err: %v, addr: %v, addrPort: %v, hostId: %v",
+			conn.session.logger.Printf("dbg165 query_executor.go: completed try [%d], not retrying because err: %v, addr: %v, addrPort: %v, hostId: %v, took %.3f sec",
 				dbgTryCount,
 				iter.err,
 				dbgTryAddrList,
 				dbgTryAddrPortList,
-				dbgTryHostIdList)
+				dbgTryHostIdList,
+				time.Since(t0).Seconds())
 			selectedHost.Mark(nil)
 			return iter
 		default:
@@ -196,13 +199,14 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 		attemptsReached := !rt.Attempt(qry)
 		retryType := rt.GetRetryType(iter.err)
 
-		conn.session.logger.Printf("dbg181 query_executor.go: completed try [%d] retryType: %s, err: %s, addr: %v, addrPort: %v, hostId: %v",
+		conn.session.logger.Printf("dbg181 query_executor.go: completed try [%d] retryType: %s, err: %s, addr: %v, addrPort: %v, hostId: %v, time so far: %.3f sec",
 			dbgTryCount,
 			RetryTypeName[retryType],
 			iter.err,
 			dbgTryAddrList,
 			dbgTryAddrPortList,
-			dbgTryHostIdList)
+			dbgTryHostIdList,
+			time.Since(t0).Seconds())
 		if stackTraceOnRetry && dbgTryCount == stackTraceOnRetryCount {
 			conn.session.logger.Print("dbg190: query_executor.go: stack: " + string(debug.Stack()))
 		}

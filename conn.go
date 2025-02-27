@@ -1428,6 +1428,7 @@ type inflightPrepare struct {
 
 func (c *Conn) prepareStatement(ctx context.Context, stmt string, tracer Tracer) (*preparedStatment, error) {
 	dbgCheckMissingTimeout(ctx)
+	t0 := time.Now()
 	stmtCacheKey := c.session.stmtsLRU.keyFor(c.host.HostID(), c.currentKeyspace, stmt)
 	flight, ok := c.session.stmtsLRU.execIfMissing(stmtCacheKey, func(lru *lru.Cache) *inflightPrepare {
 		flight := &inflightPrepare{
@@ -1453,6 +1454,7 @@ func (c *Conn) prepareStatement(ctx context.Context, stmt string, tracer Tracer)
 			// their context cancelled error.
 			framer, err := c.exec(c.ctx, prep, tracer)
 			if err != nil {
+				c.logger.Printf("dbg1457: gocql: conn.prepareStatement: error from c.exec, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 				flight.err = err
 				c.session.stmtsLRU.remove(stmtCacheKey)
 				return
@@ -1460,6 +1462,7 @@ func (c *Conn) prepareStatement(ctx context.Context, stmt string, tracer Tracer)
 
 			frame, err := framer.parseFrame()
 			if err != nil {
+				c.logger.Printf("dbg1457: gocql: conn.prepareStatement: error from framer.parseFrame, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 				flight.err = err
 				c.session.stmtsLRU.remove(stmtCacheKey)
 				return
@@ -1483,6 +1486,7 @@ func (c *Conn) prepareStatement(ctx context.Context, stmt string, tracer Tracer)
 					response: x.respMeta,
 				}
 			case error:
+				c.logger.Printf("dbg1457: gocql: conn.prepareStatement: error from frame.type, addr:%s, err: %v, took: %.3f sec", c.Address(), x, time.Since(t0).Seconds())
 				flight.err = x
 			default:
 				flight.err = NewErrProtocol("Unknown type in response to prepare frame: %s", x)
@@ -1496,6 +1500,7 @@ func (c *Conn) prepareStatement(ctx context.Context, stmt string, tracer Tracer)
 
 	select {
 	case <-ctx.Done():
+		c.logger.Printf("dbg1457: gocql: conn.prepareStatement: ctx.Done, addr:%s, err: %v, took: %.3f sec", c.Address(), ctx.Err(), time.Since(t0).Seconds())
 		return nil, ctx.Err()
 	case <-flight.done:
 		return flight.preparedStatment, flight.err
@@ -1524,6 +1529,7 @@ func marshalQueryValue(typ TypeInfo, value interface{}, dst *queryValues) error 
 
 func (c *Conn) executeQuery(ctx context.Context, qry *Query) *Iter {
 	dbgCheckMissingTimeout(ctx)
+	t0 := time.Now()
 	params := queryParams{
 		consistency: qry.cons,
 	}
@@ -1553,6 +1559,7 @@ func (c *Conn) executeQuery(ctx context.Context, qry *Query) *Iter {
 		var err error
 		info, err = c.prepareStatement(ctx, qry.stmt, qry.trace)
 		if err != nil {
+			c.logger.Printf("dbg1557: gocql: conn.executeQuery: error from c.prepareStatement, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 			return &Iter{err: err}
 		}
 
@@ -1566,6 +1573,7 @@ func (c *Conn) executeQuery(ctx context.Context, qry *Query) *Iter {
 			})
 
 			if err != nil {
+				c.logger.Printf("dbg1572: gocql: conn.executeQuery: error from qry.binding, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 				return &Iter{err: err}
 			}
 		}
@@ -1580,6 +1588,7 @@ func (c *Conn) executeQuery(ctx context.Context, qry *Query) *Iter {
 			value := values[i]
 			typ := info.request.columns[i].TypeInfo
 			if err := marshalQueryValue(typ, value, v); err != nil {
+				c.logger.Printf("dbg1587: conn.executeQuery: error from marshalQueryValue, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 				return &Iter{err: err}
 			}
 		}
@@ -1608,11 +1617,13 @@ func (c *Conn) executeQuery(ctx context.Context, qry *Query) *Iter {
 
 	framer, err := c.exec(ctx, frame, qry.trace)
 	if err != nil {
+		c.logger.Printf("dbg1616: conn.executeQuery: error from c.exec, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 		return &Iter{err: err}
 	}
 
 	resp, err := framer.parseFrame()
 	if err != nil {
+		c.logger.Printf("dbg1557: conn.executeQuery: error from framer.parseFrame, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 		return &Iter{err: err}
 	}
 
@@ -1675,6 +1686,7 @@ func (c *Conn) executeQuery(ctx context.Context, qry *Query) *Iter {
 		c.session.stmtsLRU.evictPreparedID(stmtCacheKey, x.StatementId)
 		return c.executeQuery(ctx, qry)
 	case error:
+		c.logger.Printf("dbg1685: conn.executeQuery: error from resp type, addr:%s, err: %v, took: %.3f sec", c.Address(), err, time.Since(t0).Seconds())
 		return &Iter{err: x, framer: framer}
 	default:
 		return &Iter{
