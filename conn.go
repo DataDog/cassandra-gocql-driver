@@ -45,8 +45,15 @@ import (
 	"github.com/gocql/gocql/internal/streams"
 )
 
+// const dbgDefaultTimeoutIfMissing = 5 * time.Second
 const dbgMissingTimeoutStackDumpEnabled = true
-const dbgDefaultTimeoutIfMissing = 5 * time.Second
+
+var dbgSampledLogEnabled = true
+var dbgSampledLogMutex sync.Mutex
+var dbgSampledLogRandom = rand.New(rand.NewSource(1))
+var dbgSampledLogNextTime = time.Time{}
+var dbgSampledLogPeriod = 5 * time.Second
+var dbgSampledLogJitter = 2 * time.Second
 
 // approve the authenticator with the list of allowed authenticators. If the provided list is empty,
 // the given authenticator is allowed.
@@ -1121,13 +1128,6 @@ func dbgGetTimeoutFromCtx(ctx context.Context) time.Duration {
 	}
 	return timeout
 }
-
-var dbgSampledLogEnabled = true
-var dbgSampledLogMutex sync.Mutex
-var dbgSampledLogRandom = rand.New(rand.NewSource(1))
-var dbgSampledLogNextTime = time.Time{}
-var dbgSampledLogPeriod = 5 * time.Second
-var dbgSampledLogJitter = 2 * time.Second
 
 // Return True if we should log. We sample at an approximate rate.
 func dbgShouldLog() (bool, string) {

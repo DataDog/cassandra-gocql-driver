@@ -1,6 +1,8 @@
 package hostpool
 
 import (
+	"log"
+	"sort"
 	"sync"
 
 	"github.com/hailocab/go-hostpool"
@@ -37,6 +39,14 @@ func (r *hostPoolHostPolicy) SetPartitioner(string)                     {}
 func (r *hostPoolHostPolicy) IsLocal(*gocql.HostInfo) bool              { return true }
 
 func (r *hostPoolHostPolicy) SetHosts(hosts []*gocql.HostInfo) {
+
+	dbgHosts := []string{}
+	for _, h := range hosts {
+		dbgHosts = append(dbgHosts, string(h.ConnectAddress()))
+	}
+	sort.Strings(dbgHosts)
+	log.Printf("gocql: hostPoolHostPolicy.SetHosts: %v", dbgHosts)
+
 	peers := make([]string, len(hosts))
 	hostMap := make(map[string]*gocql.HostInfo, len(hosts))
 
@@ -60,6 +70,7 @@ func (r *hostPoolHostPolicy) AddHost(host *gocql.HostInfo) {
 
 	// If the host addr is present and isn't nil return
 	if h, ok := r.hostMap[ip]; ok && h != nil {
+		log.Printf("gocql: hostPoolHostPolicy.AddHost: %v, already present", ip)
 		return
 	}
 	// otherwise, add the host to the map
@@ -70,6 +81,7 @@ func (r *hostPoolHostPolicy) AddHost(host *gocql.HostInfo) {
 		hosts = append(hosts, addr)
 	}
 
+	log.Printf("gocql: hostPoolHostPolicy.AddHost: %v", ip)
 	r.hp.SetHosts(hosts)
 }
 
@@ -80,6 +92,7 @@ func (r *hostPoolHostPolicy) RemoveHost(host *gocql.HostInfo) {
 	defer r.mu.Unlock()
 
 	if _, ok := r.hostMap[ip]; !ok {
+		log.Printf("gocql: hostPoolHostPolicy.RemoveHost: %v, already absent", ip)
 		return
 	}
 
@@ -89,14 +102,17 @@ func (r *hostPoolHostPolicy) RemoveHost(host *gocql.HostInfo) {
 		hosts = append(hosts, host.ConnectAddress().String())
 	}
 
+	log.Printf("gocql: hostPoolHostPolicy.RemoveHost: %v", ip)
 	r.hp.SetHosts(hosts)
 }
 
 func (r *hostPoolHostPolicy) HostUp(host *gocql.HostInfo) {
+	log.Printf("gocql: hostPoolHostPolicy.HostUp: %v", string(host.ConnectAddress()))
 	r.AddHost(host)
 }
 
 func (r *hostPoolHostPolicy) HostDown(host *gocql.HostInfo) {
+	log.Printf("gocql: hostPoolHostPolicy.HostDown: %v", string(host.ConnectAddress()))
 	r.RemoveHost(host)
 }
 
@@ -106,15 +122,19 @@ func (r *hostPoolHostPolicy) Pick(qry gocql.ExecutableQuery) gocql.NextHost {
 		defer r.mu.RUnlock()
 
 		if len(r.hostMap) == 0 {
+			log.Printf("gocql: hostPoolHostPolicy.Pick: hostMap empty")
 			return nil
 		}
 
 		hostR := r.hp.Get()
 		host, ok := r.hostMap[hostR.Host()]
 		if !ok {
+			log.Printf("gocql: hostPoolHostPolicy.Pick: No hosts")
 			return nil
 		}
 
+		// Don't log this because it would be used on every query.
+		// log.Printf("gocql: hostPoolHostPolicy.Pick: %v", string(host.ConnectAddress()))
 		return selectedHostPoolHost{
 			policy: r,
 			info:   host,
@@ -137,6 +157,7 @@ func (host selectedHostPoolHost) Info() *gocql.HostInfo {
 
 func (host selectedHostPoolHost) Mark(err error) {
 	ip := host.info.ConnectAddress().String()
+	log.Printf("gocql: selectedHostPoolHost.Mark: %v, err:%v", ip, err)
 
 	host.policy.mu.RLock()
 	defer host.policy.mu.RUnlock()

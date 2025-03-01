@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"net"
@@ -79,6 +80,7 @@ func (c *cowHostList) add(host *HostInfo) bool {
 
 	c.list.Store(&l)
 	c.mu.Unlock()
+	log.Printf("gocql: CowHostList.add: %s", host.ConnectAddressAndPort())
 	return true
 }
 
@@ -110,6 +112,7 @@ func (c *cowHostList) remove(ip net.IP) bool {
 	c.list.Store(&newL)
 	c.mu.Unlock()
 
+	log.Printf("gocql: CowHostList.remove: %s", ip.String())
 	return true
 }
 
@@ -354,23 +357,28 @@ func (r *roundRobinHostPolicy) Pick(qry ExecutableQuery) NextHost {
 }
 
 func (r *roundRobinHostPolicy) AddHost(host *HostInfo) {
+	log.Printf("gocql: RoundRobinHostPolicy.AddHost: %s", host.ConnectAddressAndPort())
 	r.hosts.add(host)
 }
 
 func (r *roundRobinHostPolicy) RemoveHost(host *HostInfo) {
+	log.Printf("gocql: RoundRobinHostPolicy.RemoveHost: %s", host.ConnectAddressAndPort())
 	r.hosts.remove(host.ConnectAddress())
 }
 
 func (r *roundRobinHostPolicy) HostUp(host *HostInfo) {
+	log.Printf("gocql: RoundRobinHostPolicy.HostUp: %s", host.ConnectAddressAndPort())
 	r.AddHost(host)
 }
 
 func (r *roundRobinHostPolicy) HostDown(host *HostInfo) {
+	log.Printf("gocql: RoundRobinHostPolicy.HostDown: %s", host.ConnectAddressAndPort())
 	r.RemoveHost(host)
 }
 
 func ShuffleReplicas() func(*tokenAwareHostPolicy) {
 	return func(t *tokenAwareHostPolicy) {
+		log.Printf("gocql: ShufflReplicas enabled")
 		t.shuffleReplicas = true
 	}
 }
@@ -493,6 +501,7 @@ func (t *tokenAwareHostPolicy) SetPartitioner(partitioner string) {
 func (t *tokenAwareHostPolicy) AddHost(host *HostInfo) {
 	t.mu.Lock()
 	if t.hosts.add(host) {
+		log.Printf("gocql: TokenAwareHostPolicy.AddHost: %s", host.ConnectAddressAndPort())
 		meta := t.getMetadataForUpdate()
 		meta.resetTokenRing(t.partitioner, t.hosts.get(), t.logger)
 		t.updateReplicas(meta, t.getKeyspaceName())
@@ -507,7 +516,9 @@ func (t *tokenAwareHostPolicy) AddHosts(hosts []*HostInfo) {
 	t.mu.Lock()
 
 	for _, host := range hosts {
-		t.hosts.add(host)
+		if t.hosts.add(host) {
+			t.logger.Printf("gocql: TokenAwareHostPolicy.AddHosts: %s", host.ConnectAddressAndPort())
+		}
 	}
 
 	meta := t.getMetadataForUpdate()
@@ -525,6 +536,7 @@ func (t *tokenAwareHostPolicy) AddHosts(hosts []*HostInfo) {
 func (t *tokenAwareHostPolicy) RemoveHost(host *HostInfo) {
 	t.mu.Lock()
 	if t.hosts.remove(host.ConnectAddress()) {
+		log.Printf("gocql: TokenAwareHostPolicy.RemoveHost: %s", host.ConnectAddressAndPort())
 		meta := t.getMetadataForUpdate()
 		meta.resetTokenRing(t.partitioner, t.hosts.get(), t.logger)
 		t.updateReplicas(meta, t.getKeyspaceName())
@@ -536,10 +548,12 @@ func (t *tokenAwareHostPolicy) RemoveHost(host *HostInfo) {
 }
 
 func (t *tokenAwareHostPolicy) HostUp(host *HostInfo) {
+	t.logger.Printf("gocql: TokenAwareHostPolicy.HostUp: %s", host.ConnectAddressAndPort())
 	t.fallback.HostUp(host)
 }
 
 func (t *tokenAwareHostPolicy) HostDown(host *HostInfo) {
+	t.logger.Printf("gocql: TokenAwareHostPolicy.HostDown: %s", host.ConnectAddressAndPort())
 	t.fallback.HostDown(host)
 }
 

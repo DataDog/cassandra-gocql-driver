@@ -160,6 +160,8 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 		logger:          cfg.logger(),
 	}
 
+	s.logger.Printf("gocql: NewSession: ClusterConfig.Hosts: %v", cfg.Hosts)
+
 	s.schemaDescriber = newSchemaDescriber(s)
 
 	s.nodeEvents = newEventDebouncer("NodeEvents", s.handleNodeEvent, s.logger)
@@ -171,8 +173,11 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 	s.ringRefresher = newRefreshDebouncer(ringRefreshDebounceTime, func() error { return refreshRing(s.hostSource) })
 
 	if cfg.PoolConfig.HostSelectionPolicy == nil {
+		s.logger.Printf("gocql: NewSession: HostSelectionPolicy is missing and using default RoundRobinHostPolicy")
 		cfg.PoolConfig.HostSelectionPolicy = RoundRobinHostPolicy()
 	}
+	s.logger.Printf("gocql: NewSession: HostSelectionPolicy is type: %T", cfg.PoolConfig.HostSelectionPolicy)
+
 	s.pool = cfg.PoolConfig.buildPool(s)
 
 	s.policy = cfg.PoolConfig.HostSelectionPolicy
@@ -288,7 +293,7 @@ func (s *Session) init() error {
 			continue
 		}
 
-		// zzz pool.addHost -> pool.fill -> pool.connect -> pool.session.connect()
+		// EJ: note, pool.addHost -> pool.fill -> pool.connect -> pool.session.connect()
 		atomic.AddInt64(&left, 1)
 		go func() {
 			s.pool.addHost(host)
