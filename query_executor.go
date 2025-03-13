@@ -196,6 +196,7 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 			selectedHost.Mark(nil)
 			return iter
 		default:
+			conn.session.logger.Printf("dbg166 query_executor.go: calling Mark on connection, addr: %s, err: %v", host.ConnectAddressAndPort(), iter.err)
 			selectedHost.Mark(iter.err)
 		}
 

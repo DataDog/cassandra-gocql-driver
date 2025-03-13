@@ -354,7 +354,7 @@ func (h *HostInfo) State() nodeState {
 }
 
 func (h *HostInfo) setState(state nodeState) *HostInfo {
-	log.Printf("gocql: HostInfo.setState: %v, new state: %v", string(h.ConnectAddress()), state.String())
+	log.Printf("gocql: HostInfo.setState: %s, new state: %v", h.ConnectAddressAndPort(), state.String())
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.state = state

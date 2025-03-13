@@ -1167,15 +1167,19 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 			c.streams.NumStreams,
 			c.streams.Available(),
 			c.timeouts)
+		c.logger.Printf("dbg1024a: gocql: id:%s addr:%s, stack:%s",
+			logIdentifier,
+			c.addr,
+			string(debug.Stack()))
 	}
 	var dbgLoggingStream int
 	defer func() {
 		if dbgShouldLog {
-			c.logger.Printf("dbg1024d: gocql: id:%s Conn.exec, completed, addr:%s, stream:%d, took %.3f sec\n",
+			c.logger.Printf("dbg1024f: gocql: id:%s Conn.exec, completed, addr:%s, stream:%d, took %.3f sec\n",
 				logIdentifier,
 				c.addr,
 				dbgLoggingStream,
-				time.Since(t0))
+				time.Since(t0).Seconds())
 		}
 	}()
 	if ctxErr := ctx.Err(); ctxErr != nil {
@@ -1206,7 +1210,7 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 	}
 
 	if err := c.addCall(call); err != nil {
-		c.logger.Printf("dbg1208 conn.go: Conn.exec, calling c.addCall, err: %v, addr: %v, took %.3f sec",
+		c.logger.Printf("dbg1208a conn.go: Conn.exec, calling c.addCall, err: %v, addr: %v, took %.3f sec",
 			err,
 			c.addr,
 			time.Since(t0).Seconds())
@@ -1265,10 +1269,11 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 	}
 	n, err := c.w.writeContext(ctx, framer.buf)
 	if dbgShouldLog {
-		c.logger.Printf("dbg1024c: gocql: id:%s Conn.exec: mid, addr:%s, stream:%d, post write to network\n",
+		c.logger.Printf("dbg1024c: gocql: id:%s Conn.exec: mid, addr:%s, stream:%d, post write to network, err: %v\n",
 			logIdentifier,
 			c.addr,
-			dbgLoggingStream)
+			dbgLoggingStream,
+			err)
 	}
 	if err != nil {
 		// closeWithError will block waiting for this stream to either receive a response
@@ -1294,7 +1299,7 @@ func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*fram
 			// send a frame on, with all the streams used up and not returned.
 			c.closeWithError(err)
 		}
-		c.logger.Printf("dbg1208 conn.go: Conn.exec, calling c.w.writeContext, err: %v, addr: %v, took %.3f sec",
+		c.logger.Printf("dbg1208b conn.go: Conn.exec, calling c.w.writeContext, err: %v, addr: %v, took %.3f sec",
 			err,
 			c.addr,
 			time.Since(t0).Seconds())
