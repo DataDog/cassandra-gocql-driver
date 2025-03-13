@@ -27,6 +27,7 @@ package gocql
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"time"
 )
@@ -299,6 +300,7 @@ func NewCluster(hosts ...string) *ClusterConfig {
 		ReconnectionPolicy:     &ConstantReconnectionPolicy{MaxRetries: 3, Interval: 1 * time.Second},
 		WriteCoalesceWaitTime:  200 * time.Microsecond,
 	}
+	log.Printf("gocql: NewCluster: setting ConnectTimeout:%s", cfg.ConnectTimeout)
 	return cfg
 }
 

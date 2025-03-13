@@ -214,6 +214,10 @@ type Conn struct {
 
 // connect establishes a connection to a Cassandra node using session's connection config.
 func (s *Session) connect(ctx context.Context, host *HostInfo, errorHandler ConnErrorHandler) (*Conn, error) {
+	t0 := time.Now()
+	s.logger.Printf("gocql Session.connect, about to call s.dial, ctxTimeLeft:%s", timeoutFromCtx(ctx))
+	defer func() { s.logger.Printf("gocql Session.connect, took %s", time.Since(t0)) }()
+
 	return s.dial(ctx, host, s.connCfg, errorHandler)
 }
 
@@ -240,7 +244,12 @@ func (s *Session) dial(ctx context.Context, host *HostInfo, connConfig *ConnConf
 //
 // dialWithoutObserver does not notify the connection observer, so you most probably want to call dial() instead.
 func (s *Session) dialWithoutObserver(ctx context.Context, host *HostInfo, cfg *ConnConfig, errorHandler ConnErrorHandler) (*Conn, error) {
+
+	// zzz TODO: Need to make sure we get called with a ctx with deadline
+	t0 := time.Now()
+	s.logger.Printf("gocql Session.dialWithoutObserver, about to call cfg.HostDialer.DialHost, ctxTimeLeft:%s", timeoutFromCtx(ctx))
 	dialedHost, err := cfg.HostDialer.DialHost(ctx, host)
+	s.logger.Printf("gocql Session.dialWithoutObserver, took %s, err:%v", time.Since(t0), err)
 	if err != nil {
 		return nil, err
 	}
@@ -288,6 +297,12 @@ func (s *Session) dialWithoutObserver(ctx context.Context, host *HostInfo, cfg *
 }
 
 func (c *Conn) init(ctx context.Context, dialedHost *DialedHost) error {
+
+	// zzz TODO: Make sure we have ctx with deadline
+	t0 := time.Now()
+	c.logger.Printf("gocql Conn.init, about to call s.dial, ctxTimeLeft:%s", timeoutFromCtx(ctx))
+	defer func() { c.logger.Printf("gocql Conn.init, took %s", time.Since(t0)) }()
+
 	if c.session.cfg.AuthProvider != nil {
 		var err error
 		c.auth, err = c.cfg.AuthProvider(c.host)
@@ -302,6 +317,10 @@ func (c *Conn) init(ctx context.Context, dialedHost *DialedHost) error {
 		frameTicker: make(chan struct{}),
 		conn:        c,
 	}
+
+	// zzz TODO: Note the special tweak of c.timeout
+	// We need to change to have conn.timeout == 0 we we use the ctx.
+	// TODO TODO TODO TODO need to alter below
 
 	c.timeout = c.cfg.ConnectTimeout
 	if err := startup.setupConn(ctx); err != nil {
@@ -354,6 +373,7 @@ type startupCoordinator struct {
 }
 
 func (s *startupCoordinator) setupConn(ctx context.Context) error {
+
 	var cancel context.CancelFunc
 	if s.conn.timeout > 0 {
 		ctx, cancel = context.WithTimeout(ctx, s.conn.timeout)
@@ -361,6 +381,12 @@ func (s *startupCoordinator) setupConn(ctx context.Context) error {
 		ctx, cancel = context.WithCancel(ctx)
 	}
 	defer cancel()
+
+	// zzz TODO: Here we reset the timeout, maybe we want it set to zero so it can use ctx
+
+	t0 := time.Now()
+	s.conn.logger.Printf("gocql startupCoordinator.setupConn: ctx timeout: %s", timeoutFromCtx(ctx))
+	defer func() { s.conn.logger.Printf("gocql startupCoordinator.setupConn: took: %s", time.Since(t0)) }()
 
 	startupErr := make(chan error)
 	go func() {
@@ -428,6 +454,11 @@ func (s *startupCoordinator) options(ctx context.Context) error {
 }
 
 func (s *startupCoordinator) startup(ctx context.Context, supported map[string][]string) error {
+
+	t0 := time.Now()
+	s.conn.logger.Printf("gocql startupCoordinator.startup: ctx timeout: %s", timeoutFromCtx(ctx))
+	defer func() { s.conn.logger.Printf("gocql startupCoordinator.startup: took: %s", time.Since(t0)) }()
+
 	m := map[string]string{
 		"CQL_VERSION":    s.conn.cfg.CQLVersion,
 		"DRIVER_NAME":    driverName,
@@ -644,6 +675,11 @@ func (c *Conn) heartBeat(ctx context.Context) {
 }
 
 func (c *Conn) recv(ctx context.Context) error {
+
+	t0 := time.Now()
+	c.logger.Printf("gocql Conn.recv: ctx timeout: %s", timeoutFromCtx(ctx))
+	defer func() { c.logger.Printf("gocql Conn.recv: took: %s", time.Since(t0)) }()
+
 	// not safe for concurrent reads
 
 	// read a full header, ignore timeouts, as this is being ran in a loop
@@ -1011,6 +1047,11 @@ func (c *Conn) addCall(call *callReq) error {
 }
 
 func (c *Conn) exec(ctx context.Context, req frameBuilder, tracer Tracer) (*framer, error) {
+
+	t0 := time.Now()
+	c.logger.Printf("gocql Conn.exec: ctx timeout: %s", timeoutFromCtx(ctx))
+	defer func() { c.logger.Printf("gocql Conn.exec: took: %s", time.Since(t0)) }()
+
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
@@ -1497,6 +1538,11 @@ func (c *Conn) AvailableStreams() int {
 }
 
 func (c *Conn) UseKeyspace(keyspace string) error {
+
+	t0 := time.Now()
+	c.logger.Printf("gocql Conn.UseKeyspace: ctx timeout: %s", timeoutFromCtx(c.ctx))
+	defer func() { c.logger.Printf("gocql Conn.UseKeyspace: took: %s", time.Since(t0)) }()
+
 	q := &writeQueryFrame{statement: `USE "` + keyspace + `"`}
 	q.params.consistency = c.session.cons
 
@@ -1748,3 +1794,19 @@ var (
 	ErrConnectionClosed  = errors.New("gocql: connection closed waiting for response")
 	ErrNoStreams         = errors.New("gocql: no streams available on connection")
 )
+
+// Return time left until context deadline.
+// Return zero if context is missing or deadline not set.
+func timeoutFromCtx(ctx context.Context) time.Duration {
+	var timeout time.Duration
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			timeout = time.Until(deadline)
+		}
+	}
+	return timeout
+}
+
+func timeoutFromCtxSec(ctx context.Context) float64 {
+	return timeoutFromCtx(ctx).Seconds()
+}

@@ -29,6 +29,7 @@ import (
 	crand "crypto/rand"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"net"
 	"os"
@@ -130,6 +131,10 @@ func (c *controlConn) heartBeat() {
 var hostLookupPreferV4 = os.Getenv("GOCQL_HOST_LOOKUP_PREFER_V4") == "true"
 
 func hostInfo(addr string, defaultPort int) ([]*HostInfo, error) {
+	t0 := time.Now()
+	log.Printf("gocql: addrsToHosts: start")
+	defer func() { log.Printf("gocql: addrsToHosts: took %s", time.Since(t0)) }()
+
 	var port int
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -151,6 +156,7 @@ func hostInfo(addr string, defaultPort int) ([]*HostInfo, error) {
 	}
 
 	// Look up host in DNS
+	// zzz TODO: There is a version that takes ctx.
 	ips, err := LookupIP(host)
 	if err != nil {
 		return nil, err
@@ -247,6 +253,12 @@ func (c *controlConn) discoverProtocol(hosts []*HostInfo) (int, error) {
 }
 
 func (c *controlConn) connect(hosts []*HostInfo) error {
+
+	// zzz TODO: This uses .session.ctx
+	t0 := time.Now()
+	c.session.logger.Printf("gocql: controlConn.connect: ctx timeout left: %s", timeoutFromCtx(c.session.ctx))
+	defer func() { c.session.logger.Printf("gocql: controlConn.connect: took %s", time.Since(t0)) }()
+
 	if len(hosts) == 0 {
 		return errors.New("control: no endpoints specified")
 	}
@@ -292,6 +304,12 @@ type connHost struct {
 }
 
 func (c *controlConn) setupConn(conn *Conn) error {
+
+	// zzz TODO: This uses .session.ctx
+	t0 := time.Now()
+	c.session.logger.Printf("gocql: controlConn.setupConn: started")
+	defer func() { c.session.logger.Printf("gocql: controlConn.setupConn: took %s", time.Since(t0)) }()
+
 	// we need up-to-date host info for the filterHost call below
 	iter := conn.querySystemLocal(context.TODO())
 	host, err := c.session.hostInfoFromIter(iter, conn.host.connectAddress, conn.conn.RemoteAddr().(*net.TCPAddr).Port)
@@ -328,6 +346,12 @@ func (c *controlConn) setupConn(conn *Conn) error {
 }
 
 func (c *controlConn) registerEvents(conn *Conn) error {
+
+	// zzz TODO: This uses .session.ctx
+	t0 := time.Now()
+	c.session.logger.Printf("gocql: controlConn.registerEvents: started")
+	defer func() { c.session.logger.Printf("gocql: controlConn.registerEvents: took %s", time.Since(t0)) }()
+
 	var events []string
 
 	if !c.session.cfg.Events.DisableTopologyEvents {
@@ -464,6 +488,8 @@ func (c *controlConn) writeFrame(w frameBuilder) (frame, error) {
 	if ch == nil {
 		return nil, errNoControl
 	}
+
+	// zzz TODO: BUG? No context?
 
 	framer, err := ch.conn.exec(context.Background(), w, nil)
 	if err != nil {

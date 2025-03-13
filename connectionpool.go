@@ -30,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math/rand"
 	"net"
 	"sync"
@@ -108,6 +109,11 @@ type policyConnPool struct {
 }
 
 func connConfig(cfg *ClusterConfig) (*ConnConfig, error) {
+
+	t0 := time.Now()
+	log.Printf("gocql connConfig(ClusterConfig) ClusterConfig.ConnectTimeout:%s", cfg.ConnectTimeout)
+	defer func() { log.Printf("gocql connConfig(ClusterConfig), took %s", time.Since(t0)) }()
+
 	var (
 		err        error
 		hostDialer HostDialer
@@ -119,7 +125,7 @@ func connConfig(cfg *ClusterConfig) (*ConnConfig, error) {
 
 		// TODO(zariel): move tls config setup into session init.
 		if cfg.SslOpts != nil {
-			tlsConfig, err = setupTLSConfig(cfg.SslOpts)
+			tlsConfig, err = setupTLSConfig(cfg.SslOpts) // No network
 			if err != nil {
 				return nil, err
 			}
@@ -133,6 +139,8 @@ func connConfig(cfg *ClusterConfig) (*ConnConfig, error) {
 			if cfg.SocketKeepalive > 0 {
 				d.KeepAlive = cfg.SocketKeepalive
 			}
+			// zzz TODO: This above propagates a new ConnectTimeout, maybe we should derive from ctx instead.
+			log.Printf("gocql connectionpool.go connConfig: set net.Dialer.Timeout:%s", cfg.ConnectTimeout)
 			dialer = d
 		}
 
@@ -141,6 +149,9 @@ func connConfig(cfg *ClusterConfig) (*ConnConfig, error) {
 			tlsConfig: tlsConfig,
 		}
 	}
+
+	// zzz TODO: This below propagates a new ConnectTimeout, maybe we should derive from ctx instead.
+	log.Printf("gocql connectionpool.go connConfig: set ConnConfig.ConnectTimeout:%s", cfg.ConnectTimeout)
 
 	return &ConnConfig{
 		ProtoVersion:   cfg.ProtoVersion,
@@ -183,7 +194,7 @@ func (p *policyConnPool) SetHosts(hosts []*HostInfo) {
 	pools := make(chan *hostConnPool)
 	createCount := 0
 	for _, host := range hosts {
-		if !host.IsUp() {
+		if !host.IsUp() { // no network
 			// don't create a connection pool for a down host
 			continue
 		}
@@ -197,7 +208,7 @@ func (p *policyConnPool) SetHosts(hosts []*HostInfo) {
 		createCount++
 		go func(host *HostInfo) {
 			// create a connection pool for the host
-			pools <- newHostConnPool(
+			pools <- newHostConnPool( // no network
 				p.session,
 				host,
 				p.port,
@@ -344,7 +355,7 @@ func (pool *hostConnPool) Pick() *Conn {
 	size := len(pool.conns)
 	if size < pool.size {
 		// try to fill the pool
-		go pool.fill()
+		go pool.fill() // no network
 
 		if size == 0 {
 			return nil
@@ -504,7 +515,10 @@ func (pool *hostConnPool) fillingStopped(err error) {
 		// wait for some time to avoid back-to-back filling
 		// this provides some time between failed attempts
 		// to fill the pool for the host to recover
-		time.Sleep(time.Duration(rand.Int31n(100)+31) * time.Millisecond)
+		// time.Sleep(time.Duration(rand.Int31n(100)+31) * time.Millisecond)
+		tsleep := time.Duration(rand.Int31n(100)+31) * time.Millisecond
+		log.Printf("gocql hostConnPool.fillingStopped: sleeping %s (31...131ms)", tsleep)
+		time.Sleep(tsleep)
 	}
 
 	pool.mu.Lock()
@@ -540,8 +554,8 @@ func (pool *hostConnPool) connectMany(count int) error {
 	for i := 0; i < count; i++ {
 		go func() {
 			defer wg.Done()
-			err := pool.connect()
-			pool.logConnectErr(err)
+			err := pool.connect()   // zz
+			pool.logConnectErr(err) // no network
 			if err != nil {
 				mu.Lock()
 				connectErr = err
@@ -557,13 +571,21 @@ func (pool *hostConnPool) connectMany(count int) error {
 
 // create a new connection to the host and add it to the pool
 func (pool *hostConnPool) connect() (err error) {
+
+	// zzz TODO: How to know how much time is left?
+	pool.logger.Printf("gocql: hostConnPool.connect: timeleft: unknown")
+
 	// TODO: provide a more robust connection retry mechanism, we should also
 	// be able to detect hosts that come up by trying to connect to downed ones.
 	// try to connect
 	var conn *Conn
 	reconnectionPolicy := pool.session.cfg.ReconnectionPolicy
 	for i := 0; i < reconnectionPolicy.GetMaxRetries(); i++ {
-		conn, err = pool.session.connect(pool.session.ctx, pool.host, pool)
+		// zzz TODO: Check for context expired for each loop.
+
+		// zzz TODO: this returns conn, which has ctx.
+		// zzz TODO: Who sets pool.session.ctx?
+		conn, err = pool.session.connect(pool.session.ctx, pool.host, pool) // zz
 		if err == nil {
 			break
 		}
@@ -578,6 +600,7 @@ func (pool *hostConnPool) connect() (err error) {
 			pool.logger.Printf("gocql: connection failed %q: %v, reconnecting with %T\n",
 				pool.host.ConnectAddress(), err, reconnectionPolicy)
 		}
+		log.Printf("gocql: hostconnPool.connect: sleep %s\n", reconnectionPolicy.GetInterval(i))
 		time.Sleep(reconnectionPolicy.GetInterval(i))
 	}
 
@@ -585,6 +608,7 @@ func (pool *hostConnPool) connect() (err error) {
 		return err
 	}
 
+	// zzz TODO: uses conn.ctx
 	if pool.keyspace != "" {
 		// set the keyspace
 		if err = conn.UseKeyspace(pool.keyspace); err != nil {

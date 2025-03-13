@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -112,6 +113,10 @@ var queryPool = &sync.Pool{
 }
 
 func addrsToHosts(addrs []string, defaultPort int, logger StdLogger) ([]*HostInfo, error) {
+	t0 := time.Now()
+	logger.Printf("gocql: addrsToHosts: start")
+	defer func() { logger.Printf("gocql: addrsToHosts: took %s", time.Since(t0)) }()
+
 	var hosts []*HostInfo
 	for _, hostaddr := range addrs {
 		resolvedHosts, err := hostInfo(hostaddr, defaultPort)
@@ -134,6 +139,11 @@ func addrsToHosts(addrs []string, defaultPort int, logger StdLogger) ([]*HostInf
 
 // NewSession wraps an existing Node.
 func NewSession(cfg ClusterConfig) (*Session, error) {
+
+	t0 := time.Now()
+	log.Printf("gocql: NewSession: ConnectTimeout:%s", cfg.ConnectTimeout)
+	defer func() { log.Printf("gocql: NewSession: took %s", time.Since(t0)) }()
+
 	// Check that hosts in the ClusterConfig is not empty
 	if len(cfg.Hosts) < 1 {
 		return nil, ErrNoHosts
@@ -146,6 +156,8 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 
 	// TODO: we should take a context in here at some point
 	ctx, cancel := context.WithCancel(context.TODO())
+
+	// zzz TODO: change ctx here?
 
 	s := &Session{
 		cons:            cfg.Consistency,
@@ -166,16 +178,16 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 
 	s.routingKeyInfoCache.lru = lru.New(cfg.MaxRoutingKeyInfo)
 
-	s.hostSource = &ringDescriber{session: s}
+	s.hostSource = &ringDescriber{session: s} // No network
 	s.ringRefresher = newRefreshDebouncer(ringRefreshDebounceTime, func() error { return refreshRing(s.hostSource) })
 
 	if cfg.PoolConfig.HostSelectionPolicy == nil {
 		cfg.PoolConfig.HostSelectionPolicy = RoundRobinHostPolicy()
 	}
-	s.pool = cfg.PoolConfig.buildPool(s)
+	s.pool = cfg.PoolConfig.buildPool(s) // No network
 
 	s.policy = cfg.PoolConfig.HostSelectionPolicy
-	s.policy.Init(s)
+	s.policy.Init(s) // No network
 
 	s.executor = &queryExecutor{
 		pool:   s.pool,
@@ -189,7 +201,7 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 	s.streamObserver = cfg.StreamObserver
 
 	//Check the TLS Config before trying to connect to anything external
-	connCfg, err := connConfig(&s.cfg)
+	connCfg, err := connConfig(&s.cfg) // zzz
 	if err != nil {
 		//TODO: Return a typed error
 		return nil, fmt.Errorf("gocql: unable to create session: %v", err)
@@ -212,14 +224,18 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 }
 
 func (s *Session) init() error {
-	hosts, err := addrsToHosts(s.cfg.Hosts, s.cfg.Port, s.logger)
+	t0 := time.Now()
+	s.logger.Printf("gocql: Session.init: start")
+	defer func() { s.logger.Printf("gocql: Session.init: took %s", time.Since(t0)) }()
+
+	hosts, err := addrsToHosts(s.cfg.Hosts, s.cfg.Port, s.logger) // zz
 	if err != nil {
 		return err
 	}
 	s.ring.endpoints = hosts
 
 	if !s.cfg.disableControlConn {
-		s.control = createControlConn(s)
+		s.control = createControlConn(s) // zzz
 		if s.cfg.ProtoVersion == 0 {
 			proto, err := s.control.discoverProtocol(hosts)
 			if err != nil {
@@ -233,6 +249,7 @@ func (s *Session) init() error {
 			s.connCfg.ProtoVersion = proto
 		}
 
+		// zzz
 		if err := s.control.connect(hosts); err != nil {
 			return err
 		}
@@ -289,7 +306,7 @@ func (s *Session) init() error {
 
 		atomic.AddInt64(&left, 1)
 		go func() {
-			s.pool.addHost(host)
+			s.pool.addHost(host) // zzz
 			connectedCh <- struct{}{}
 
 			// if there are no hosts left, then close the hostCh to unblock the loop
@@ -341,7 +358,7 @@ func (s *Session) init() error {
 	// connection is disable, we really have no choice, so we just make our
 	// best guess...
 	if !s.cfg.disableControlConn && s.cfg.DisableInitialHostLookup {
-		newer, _ := checkSystemSchema(s.control)
+		newer, _ := checkSystemSchema(s.control) // zzz
 		s.useSystemSchema = newer
 	} else {
 		version := s.ring.rrHost().Version()
