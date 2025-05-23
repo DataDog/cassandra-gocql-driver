@@ -27,6 +27,7 @@ package gocql
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -41,6 +42,7 @@ type ExecutableQuery interface {
 	Keyspace() string
 	Table() string
 	IsIdempotent() bool
+	GetHostID() string
 
 	withContext(context.Context) ExecutableQuery
 
@@ -83,12 +85,34 @@ func (q *queryExecutor) speculate(ctx context.Context, qry ExecutableQuery, sp S
 }
 
 func (q *queryExecutor) executeQuery(qry ExecutableQuery) (*Iter, error) {
-	hostIter := q.policy.Pick(qry)
+	var hostIter NextHost
+
+	// check if the host id is specified for the query,
+	// if it is, the query should be executed at the corresponding host.
+	if hostID := qry.GetHostID(); hostID != "" {
+		host, ok := q.pool.session.ring.getHost(hostID)
+		if !ok {
+			return nil, ErrNoConnections
+		}
+		var returnedHostOnce int32 = 0
+		hostIter = func() SelectedHost {
+			if atomic.CompareAndSwapInt32(&returnedHostOnce, 0, 1) {
+				return (*selectedHost)(host)
+			}
+			return nil
+		}
+	}
+
+	// if host is not specified for the query,
+	// then a host will be picked by HostSelectionPolicy
+	if hostIter == nil {
+		hostIter = q.policy.Pick(qry)
+	}
 
 	// check if the query is not marked as idempotent, if
 	// it is, we force the policy to NonSpeculative
 	sp := qry.speculativeExecutionPolicy()
-	if !qry.IsIdempotent() || sp.Attempts() == 0 {
+	if qry.GetHostID() != "" || !qry.IsIdempotent() || sp.Attempts() == 0 {
 		return q.do(qry.Context(), qry, hostIter), nil
 	}
 

@@ -75,8 +75,6 @@ type Session struct {
 	ring     ring
 	metadata clusterMetadata
 
-	mu sync.RWMutex
-
 	control *controlConn
 
 	// event handlers
@@ -144,12 +142,16 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 		return nil, errors.New("Can't use both Authenticator and AuthProvider in cluster config.")
 	}
 
+	if cfg.SerialConsistency > 0 && !cfg.SerialConsistency.isSerial() {
+		return nil, fmt.Errorf("the default SerialConsistency level is not allowed to be anything else but SERIAL or LOCAL_SERIAL. Recived value: %v", cfg.SerialConsistency)
+	}
+
 	// TODO: we should take a context in here at some point
 	ctx, cancel := context.WithCancel(context.TODO())
 
 	s := &Session{
 		cons:            cfg.Consistency,
-		prefetch:        0.25,
+		prefetch:        cfg.NextPagePrefetch,
 		cfg:             cfg,
 		pageSize:        cfg.PageSize,
 		stmtsLRU:        &preparedLRU{lru: lru.New(cfg.MaxPreparedStmts)},
@@ -157,6 +159,7 @@ func NewSession(cfg ClusterConfig) (*Session, error) {
 		ctx:             ctx,
 		cancel:          cancel,
 		logger:          cfg.logger(),
+		trace:           cfg.Tracer,
 	}
 
 	s.schemaDescriber = newSchemaDescriber(s)
@@ -412,41 +415,6 @@ func (s *Session) reconnectDownedHosts(intv time.Duration) {
 	}
 }
 
-// SetConsistency sets the default consistency level for this session. This
-// setting can also be changed on a per-query basis and the default value
-// is Quorum.
-func (s *Session) SetConsistency(cons Consistency) {
-	s.mu.Lock()
-	s.cons = cons
-	s.mu.Unlock()
-}
-
-// SetPageSize sets the default page size for this session. A value <= 0 will
-// disable paging. This setting can also be changed on a per-query basis.
-func (s *Session) SetPageSize(n int) {
-	s.mu.Lock()
-	s.pageSize = n
-	s.mu.Unlock()
-}
-
-// SetPrefetch sets the default threshold for pre-fetching new pages. If
-// there are only p*pageSize rows remaining, the next page will be requested
-// automatically. This value can also be changed on a per-query basis and
-// the default value is 0.25.
-func (s *Session) SetPrefetch(p float64) {
-	s.mu.Lock()
-	s.prefetch = p
-	s.mu.Unlock()
-}
-
-// SetTrace sets the default tracer for this session. This setting can also
-// be changed on a per-query basis.
-func (s *Session) SetTrace(trace Tracer) {
-	s.mu.Lock()
-	s.trace = trace
-	s.mu.Unlock()
-}
-
 // Query generates a new query object for interacting with the database.
 // Further details of the query may be tweaked using the resulting query
 // value before the query is executed. Query is automatically prepared
@@ -456,6 +424,7 @@ func (s *Session) Query(stmt string, values ...interface{}) *Query {
 	qry.session = s
 	qry.stmt = stmt
 	qry.values = values
+	qry.hostID = ""
 	qry.defaultsFromSession()
 	return qry
 }
@@ -591,11 +560,20 @@ func (s *Session) getConn() *Conn {
 	return nil
 }
 
-// returns routing key indexes and type info
-func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyInfo, error) {
+// Returns routing key indexes and type info.
+// If keyspace == "" it uses the keyspace which is specified in Cluster.Keyspace
+func (s *Session) routingKeyInfo(ctx context.Context, stmt string, keyspace string) (*routingKeyInfo, error) {
+	if keyspace == "" {
+		keyspace = s.cfg.Keyspace
+	}
+
+	routingKeyInfoCacheKey := keyspace + stmt
+
 	s.routingKeyInfoCache.mu.Lock()
 
-	entry, cached := s.routingKeyInfoCache.lru.Get(stmt)
+	// Using here keyspace + stmt as a cache key because
+	// the query keyspace could be overridden via SetKeyspace
+	entry, cached := s.routingKeyInfoCache.lru.Get(routingKeyInfoCacheKey)
 	if cached {
 		// done accessing the cache
 		s.routingKeyInfoCache.mu.Unlock()
@@ -619,7 +597,7 @@ func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyI
 	inflight := new(inflightCachedEntry)
 	inflight.wg.Add(1)
 	defer inflight.wg.Done()
-	s.routingKeyInfoCache.lru.Add(stmt, inflight)
+	s.routingKeyInfoCache.lru.Add(routingKeyInfoCacheKey, inflight)
 	s.routingKeyInfoCache.mu.Unlock()
 
 	var (
@@ -635,7 +613,7 @@ func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyI
 	}
 
 	// get the query info for the statement
-	info, inflight.err = conn.prepareStatement(ctx, stmt, nil)
+	info, inflight.err = conn.prepareStatement(ctx, stmt, nil, keyspace)
 	if inflight.err != nil {
 		// don't cache this error
 		s.routingKeyInfoCache.Remove(stmt)
@@ -651,7 +629,9 @@ func (s *Session) routingKeyInfo(ctx context.Context, stmt string) (*routingKeyI
 	}
 
 	table := info.request.table
-	keyspace := info.request.keyspace
+	if info.request.keyspace != "" {
+		keyspace = info.request.keyspace
+	}
 
 	if len(info.request.pkeyColumns) > 0 {
 		// proto v4 dont need to calculate primary key columns
@@ -759,6 +739,7 @@ func (s *Session) executeBatch(batch *Batch) *Iter {
 	return iter
 }
 
+// Deprecated: use Batch.Exec instead.
 // ExecuteBatch executes a batch operation and returns nil if successful
 // otherwise an error is returned describing the failure.
 func (s *Session) ExecuteBatch(batch *Batch) error {
@@ -766,13 +747,23 @@ func (s *Session) ExecuteBatch(batch *Batch) error {
 	return iter.Close()
 }
 
+// Deprecated: use Batch.ExecCAS instead
 // ExecuteBatchCAS executes a batch operation and returns true if successful and
 // an iterator (to scan additional rows if more than one conditional statement)
 // was sent.
 // Further scans on the interator must also remember to include
 // the applied boolean as the first argument to *Iter.Scan
 func (s *Session) ExecuteBatchCAS(batch *Batch, dest ...interface{}) (applied bool, iter *Iter, err error) {
-	iter = s.executeBatch(batch)
+	return batch.ExecCAS(dest...)
+}
+
+// ExecCAS executes a batch operation and returns true if successful and
+// an iterator (to scan additional rows if more than one conditional statement)
+// was sent.
+// Further scans on the interator must also remember to include
+// the applied boolean as the first argument to *Iter.Scan
+func (b *Batch) ExecCAS(dest ...interface{}) (applied bool, iter *Iter, err error) {
+	iter = b.session.executeBatch(b)
 	if err := iter.checkErrAndNotFound(); err != nil {
 		iter.Close()
 		return false, nil, err
@@ -788,11 +779,19 @@ func (s *Session) ExecuteBatchCAS(batch *Batch, dest ...interface{}) (applied bo
 	return applied, iter, iter.err
 }
 
+// Deprecated: use Batch.MapExecCAS instead
 // MapExecuteBatchCAS executes a batch operation much like ExecuteBatchCAS,
 // however it accepts a map rather than a list of arguments for the initial
 // scan.
 func (s *Session) MapExecuteBatchCAS(batch *Batch, dest map[string]interface{}) (applied bool, iter *Iter, err error) {
-	iter = s.executeBatch(batch)
+	return batch.MapExecCAS(dest)
+}
+
+// MapExecCAS executes a batch operation much like ExecuteBatchCAS,
+// however it accepts a map rather than a list of arguments for the initial
+// scan.
+func (b *Batch) MapExecCAS(dest map[string]interface{}) (applied bool, iter *Iter, err error) {
+	iter = b.session.executeBatch(b)
 	if err := iter.checkErrAndNotFound(); err != nil {
 		iter.Close()
 		return false, nil, err
@@ -928,7 +927,7 @@ type Query struct {
 	rt                    RetryPolicy
 	spec                  SpeculativeExecutionPolicy
 	binding               func(q *QueryInfo) ([]interface{}, error)
-	serialCons            SerialConsistency
+	serialCons            Consistency
 	defaultTimestamp      bool
 	defaultTimestampValue int64
 	disableSkipMetadata   bool
@@ -949,6 +948,13 @@ type Query struct {
 
 	// routingInfo is a pointer because Query can be copied and copyable struct can't hold a mutex.
 	routingInfo *queryRoutingInfo
+
+	// hostID specifies the host on which the query should be executed.
+	// If it is empty, then the host is picked by HostSelectionPolicy
+	hostID string
+
+	keyspace          string
+	nowInSecondsValue *int
 }
 
 type queryRoutingInfo struct {
@@ -963,7 +969,6 @@ type queryRoutingInfo struct {
 func (q *Query) defaultsFromSession() {
 	s := q.session
 
-	s.mu.RLock()
 	q.cons = s.cons
 	q.pageSize = s.pageSize
 	q.trace = s.trace
@@ -976,7 +981,6 @@ func (q *Query) defaultsFromSession() {
 	q.metrics = &queryMetrics{m: make(map[string]*hostMetrics)}
 
 	q.spec = &NonSpeculativeExecution{}
-	s.mu.RUnlock()
 }
 
 // Statement returns the statement that was used to generate this query.
@@ -1156,6 +1160,9 @@ func (q *Query) Keyspace() string {
 	if q.routingInfo.keyspace != "" {
 		return q.routingInfo.keyspace
 	}
+	if q.keyspace != "" {
+		return q.keyspace
+	}
 
 	if q.session == nil {
 		return ""
@@ -1187,7 +1194,7 @@ func (q *Query) GetRoutingKey() ([]byte, error) {
 	}
 
 	// try to determine the routing key
-	routingKeyInfo, err := q.session.routingKeyInfo(q.Context(), q.stmt)
+	routingKeyInfo, err := q.session.routingKeyInfo(q.Context(), q.stmt, q.keyspace)
 	if err != nil {
 		return nil, err
 	}
@@ -1277,7 +1284,10 @@ func (q *Query) Bind(v ...interface{}) *Query {
 // either SERIAL or LOCAL_SERIAL and if not present, it defaults to
 // SERIAL. This option will be ignored for anything else that a
 // conditional update/insert.
-func (q *Query) SerialConsistency(cons SerialConsistency) *Query {
+func (q *Query) SerialConsistency(cons Consistency) *Query {
+	if !cons.isSerial() {
+		panic("serial consistency can only be SERIAL or LOCAL_SERIAL got " + cons.String())
+	}
 	q.serialCons = cons
 	return q
 }
@@ -1440,6 +1450,38 @@ func (q *Query) borrowForExecution() {
 
 func (q *Query) releaseAfterExecution() {
 	q.decRefCount()
+}
+
+// SetHostID allows to define the host the query should be executed against. If the
+// host was filtered or otherwise unavailable, then the query will error. If an empty
+// string is sent, the default behavior, using the configured HostSelectionPolicy will
+// be used. A hostID can be obtained from HostInfo.HostID() after calling GetHosts().
+func (q *Query) SetHostID(hostID string) *Query {
+	q.hostID = hostID
+	return q
+}
+
+// GetHostID returns id of the host on which query should be executed.
+func (q *Query) GetHostID() string {
+	return q.hostID
+}
+
+// SetKeyspace will enable keyspace flag on the query.
+// It allows to specify the keyspace that the query should be executed in
+//
+// Only available on protocol >= 5.
+func (q *Query) SetKeyspace(keyspace string) *Query {
+	q.keyspace = keyspace
+	return q
+}
+
+// WithNowInSeconds will enable the with now_in_seconds flag on the query.
+// Also, it allows to define now_in_seconds value.
+//
+// Only available on protocol >= 5.
+func (q *Query) WithNowInSeconds(now int) *Query {
+	q.nowInSecondsValue = &now
+	return q
 }
 
 // Iter represents an iterator that can be used to iterate over all rows that
@@ -1754,28 +1796,27 @@ type Batch struct {
 	trace                 Tracer
 	observer              BatchObserver
 	session               *Session
-	serialCons            SerialConsistency
+	serialCons            Consistency
 	defaultTimestamp      bool
 	defaultTimestampValue int64
 	context               context.Context
 	cancelBatch           func()
 	keyspace              string
 	metrics               *queryMetrics
+	nowInSeconds          *int
 
 	// routingInfo is a pointer because Query can be copied and copyable struct can't hold a mutex.
 	routingInfo *queryRoutingInfo
 }
 
+// Deprecated: use Session.Batch instead
 // NewBatch creates a new batch operation using defaults defined in the cluster
-//
-// Deprecated: use session.Batch instead
 func (s *Session) NewBatch(typ BatchType) *Batch {
 	return s.Batch(typ)
 }
 
 // Batch creates a new batch operation using defaults defined in the cluster
 func (s *Session) Batch(typ BatchType) *Batch {
-	s.mu.RLock()
 	batch := &Batch{
 		Type:             typ,
 		rt:               s.cfg.RetryPolicy,
@@ -1791,7 +1832,6 @@ func (s *Session) Batch(typ BatchType) *Batch {
 		routingInfo:      &queryRoutingInfo{},
 	}
 
-	s.mu.RUnlock()
 	return batch
 }
 
@@ -1929,7 +1969,10 @@ func (b *Batch) Size() int {
 // conditional update/insert.
 //
 // Only available for protocol 3 and above
-func (b *Batch) SerialConsistency(cons SerialConsistency) *Batch {
+func (b *Batch) SerialConsistency(cons Consistency) *Batch {
+	if !cons.isSerial() {
+		panic("serial consistency can only be SERIAL or LOCAL_SERIAL got " + cons.String())
+	}
 	b.serialCons = cons
 	return b
 }
@@ -2002,7 +2045,7 @@ func (b *Batch) GetRoutingKey() ([]byte, error) {
 		return nil, nil
 	}
 	// try to determine the routing key
-	routingKeyInfo, err := b.session.routingKeyInfo(b.Context(), entry.Stmt)
+	routingKeyInfo, err := b.session.routingKeyInfo(b.Context(), entry.Stmt, b.keyspace)
 	if err != nil {
 		return nil, err
 	}
@@ -2055,6 +2098,29 @@ func (b *Batch) borrowForExecution() {
 func (b *Batch) releaseAfterExecution() {
 	// empty, because Batch has no equivalent of Query.Release()
 	// that would race with speculative executions.
+}
+
+// GetHostID satisfies ExecutableQuery interface but does noop.
+func (b *Batch) GetHostID() string {
+	return ""
+}
+
+// SetKeyspace will enable keyspace flag on the query.
+// It allows to specify the keyspace that the query should be executed in
+//
+// Only available on protocol >= 5.
+func (b *Batch) SetKeyspace(keyspace string) *Batch {
+	b.keyspace = keyspace
+	return b
+}
+
+// WithNowInSeconds will enable the with now_in_seconds flag on the query.
+// Also, it allows to define now_in_seconds value.
+//
+// Only available on protocol >= 5.
+func (b *Batch) WithNowInSeconds(now int) *Batch {
+	b.nowInSeconds = &now
+	return b
 }
 
 type BatchType byte
@@ -2187,6 +2253,11 @@ func (t *traceWriter) Trace(traceId []byte) {
 	if err := iter.Close(); err != nil {
 		fmt.Fprintln(t.w, "Error:", err)
 	}
+}
+
+// GetHosts return a list of hosts in the ring the driver knows of.
+func (s *Session) GetHosts() []*HostInfo {
+	return s.ring.allHosts()
 }
 
 type ObservedQuery struct {

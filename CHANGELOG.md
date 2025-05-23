@@ -9,7 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Support vector type [CASSGO-11](https://issues.apache.org/jira/browse/CASSGO-11)
+
+- Allow SERIAL and LOCAL_SERIAL on SELECT statements [CASSGO-26](https://issues.apache.org/jira/browse/CASSGO-26)
+
+- Support of sending queries to the specific node with Query.SetHostID() (CASSGO-4)
+
+- Support for Native Protocol 5. Following protocol changes exposed new API 
+  Query.SetKeyspace(), Query.WithNowInSeconds(), Batch.SetKeyspace(), Batch.WithNowInSeconds() (CASSGO-1)
+
 ### Changed
+
+- Move lz4 compressor to lz4 package within the gocql module (CASSGO-32)
 
 - Don't restrict server authenticator unless PasswordAuthentictor.AllowedAuthenticators is provided (CASSGO-19)
 
@@ -35,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Standardized spelling of datacenter (CASSGO-35)
 
+- Refactor HostInfo creation and ConnectAddress() method (CASSGO-45)
+
+- gocql.Compressor interface changes to follow append-like design. Bumped Go version to 1.19 (CASSGO-1)
+
+- Refactoring hostpool package test and Expose HostInfo creation (CASSGO-59)
+
+- Move "execute batch" methods to Batch type (CASSGO-57)
+
+- Make `Session` immutable by removing setters and associated mutex (CASSGO-23)
+
 ### Fixed
 - Cassandra version unmarshal fix (CASSGO-49)
 
@@ -47,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Skip metadata only if the prepared result includes metadata (CASSGO-40)
 
 - Don't panic in MapExecuteBatchCAS if no `[applied]` column is returned (CASSGO-42)
+
+- Endless query execution fix (CASSGO-50)
 
 ## [1.7.0] - 2024-09-23
 
