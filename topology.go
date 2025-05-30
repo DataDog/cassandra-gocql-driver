@@ -33,7 +33,7 @@ import (
 
 type hostTokens struct {
 	// token is end (inclusive) of token range these hosts belong to
-	token token
+	token Token
 	hosts []*HostInfo
 }
 
@@ -48,7 +48,7 @@ func (h tokenRingReplicas) Less(i, j int) bool { return h[i].token.Less(h[j].tok
 func (h tokenRingReplicas) Len() int           { return len(h) }
 func (h tokenRingReplicas) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 
-func (h tokenRingReplicas) replicasFor(t token) *hostTokens {
+func (h tokenRingReplicas) replicasFor(t Token) *hostTokens {
 	if len(h) == 0 {
 		return nil
 	}
@@ -66,7 +66,7 @@ func (h tokenRingReplicas) replicasFor(t token) *hostTokens {
 }
 
 type placementStrategy interface {
-	replicaMap(tokenRing *tokenRing) tokenRingReplicas
+	replicaMap(tokenRing *TokenRing) tokenRingReplicas
 	replicationFactor(dc string) int
 }
 
@@ -132,7 +132,7 @@ func (s *simpleStrategy) replicationFactor(dc string) int {
 	return s.rf
 }
 
-func (s *simpleStrategy) replicaMap(tokenRing *tokenRing) tokenRingReplicas {
+func (s *simpleStrategy) replicaMap(tokenRing *TokenRing) tokenRingReplicas {
 	tokens := tokenRing.tokens
 	ring := make(tokenRingReplicas, len(tokens))
 
@@ -178,7 +178,7 @@ func (n *networkTopology) haveRF(replicaCounts map[string]int) bool {
 	return true
 }
 
-func (n *networkTopology) replicaMap(tokenRing *tokenRing) tokenRingReplicas {
+func (n *networkTopology) replicaMap(tokenRing *TokenRing) tokenRingReplicas {
 	dcRacks := make(map[string]map[string]struct{}, len(n.dcs))
 	// skipped hosts in a dc
 	skipped := make(map[string][]*HostInfo, len(n.dcs))
