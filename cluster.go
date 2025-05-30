@@ -1,6 +1,26 @@
-// Copyright (c) 2012 The gocql Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2012, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
 
 package gocql
 
@@ -82,7 +102,13 @@ type ClusterConfig struct {
 	// Initial keyspace. Optional.
 	Keyspace string
 
-	// Number of connections per host.
+	// The size of the connection pool for each host.
+	// The pool filling runs in separate gourutine during the session initialization phase.
+	// gocql will always try to get 1 connection on each host pool
+	// during session initialization AND it will attempt
+	// to fill each pool afterward asynchronously if NumConns > 1.
+	// Notice: There is no guarantee that pool filling will be finished in the initialization phase.
+	// Also, it describes a maximum number of connections at the same time.
 	// Default: 2
 	NumConns int
 
@@ -130,7 +156,7 @@ type ClusterConfig struct {
 
 	// Consistency for the serial part of queries, values can be either SERIAL or LOCAL_SERIAL.
 	// Default: unset
-	SerialConsistency SerialConsistency
+	SerialConsistency Consistency
 
 	// SslOpts configures TLS use when HostDialer is not set.
 	// SslOpts is ignored if HostDialer is set.
@@ -171,8 +197,8 @@ type ClusterConfig struct {
 
 	// If DisableInitialHostLookup then the driver will not attempt to get host info
 	// from the system.peers table, this will mean that the driver will connect to
-	// hosts supplied and will not attempt to look up the hosts information, this will
-	// mean that data_centre, rack and token information will not be available and as
+	// hosts supplied and will not attempt to lookup the hosts information, this will
+	// mean that data_center, rack and token information will not be available and as
 	// such host filtering and token aware query routing will not be available.
 	DisableInitialHostLookup bool
 
@@ -234,8 +260,19 @@ type ClusterConfig struct {
 	HostDialer HostDialer
 
 	// Logger for this ClusterConfig.
-	// If not specified, defaults to the global gocql.Logger.
+	// If not specified, defaults to the gocql.defaultLogger.
 	Logger StdLogger
+
+	// Tracer will be used for all queries. Alternatively it can be set of on a
+	// per query basis.
+	// default: nil
+	Tracer Tracer
+
+	// NextPagePrefetch sets the default threshold for pre-fetching new pages. If
+	// there are only p*pageSize rows remaining, the next page will be requested
+	// automatically. This value can also be changed on a per-query basis.
+	// default: 0.25.
+	NextPagePrefetch float64
 
 	// internal config for testing
 	disableControlConn bool
@@ -272,13 +309,14 @@ func NewCluster(hosts ...string) *ClusterConfig {
 		ConvictionPolicy:       &SimpleConvictionPolicy{},
 		ReconnectionPolicy:     &ConstantReconnectionPolicy{MaxRetries: 3, Interval: 1 * time.Second},
 		WriteCoalesceWaitTime:  200 * time.Microsecond,
+		NextPagePrefetch:       0.25,
 	}
 	return cfg
 }
 
 func (cfg *ClusterConfig) logger() StdLogger {
 	if cfg.Logger == nil {
-		return Logger
+		return &defaultLogger{}
 	}
 	return cfg.Logger
 }

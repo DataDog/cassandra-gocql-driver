@@ -1,3 +1,27 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
+
 package gocql
 
 import (
@@ -122,7 +146,11 @@ func hostInfo(addr string, defaultPort int) ([]*HostInfo, error) {
 
 	// Check if host is a literal IP address
 	if ip := net.ParseIP(host); ip != nil {
-		hosts = append(hosts, &HostInfo{hostname: host, connectAddress: ip, port: port})
+		h, err := NewHostInfo(ip, port)
+		if err != nil {
+			return nil, err
+		}
+		hosts = append(hosts, h)
 		return hosts, nil
 	}
 
@@ -148,7 +176,12 @@ func hostInfo(addr string, defaultPort int) ([]*HostInfo, error) {
 	}
 
 	for _, ip := range ips {
-		hosts = append(hosts, &HostInfo{hostname: host, connectAddress: ip, port: port})
+		h, err := NewHostInfo(ip, port)
+		if err != nil {
+			return nil, err
+		}
+
+		hosts = append(hosts, h)
 	}
 
 	return hosts, nil
@@ -192,7 +225,7 @@ func (c *controlConn) discoverProtocol(hosts []*HostInfo) (int, error) {
 	hosts = shuffleHosts(hosts)
 
 	connCfg := *c.session.connCfg
-	connCfg.ProtoVersion = 4 // TODO: define maxProtocol
+	connCfg.ProtoVersion = 5 // TODO: define maxProtocol
 
 	handler := connErrorHandlerFn(func(c *Conn, err error, closed bool) {
 		// we should never get here, but if we do it means we connected to a
@@ -270,7 +303,7 @@ type connHost struct {
 func (c *controlConn) setupConn(conn *Conn) error {
 	// we need up-to-date host info for the filterHost call below
 	iter := conn.querySystemLocal(context.TODO())
-	host, err := c.session.hostInfoFromIter(iter, conn.host.connectAddress, conn.conn.RemoteAddr().(*net.TCPAddr).Port)
+	host, err := c.session.hostInfoFromIter(iter, conn.host.connectAddress, conn.r.RemoteAddr().(*net.TCPAddr).Port)
 	if err != nil {
 		return err
 	}

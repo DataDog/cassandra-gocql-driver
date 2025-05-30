@@ -1,10 +1,35 @@
 //go:build all || unit
 // +build all unit
 
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
+
 package gocql
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -17,9 +42,13 @@ func TestUnmarshalCassVersion(t *testing.T) {
 		data    string
 		version cassVersion
 	}{
-		{"3.2", cassVersion{3, 2, 0}},
-		{"2.10.1-SNAPSHOT", cassVersion{2, 10, 1}},
-		{"1.2.3", cassVersion{1, 2, 3}},
+		{"3.2", cassVersion{3, 2, 0, ""}},
+		{"2.10.1-SNAPSHOT", cassVersion{2, 10, 1, ""}},
+		{"1.2.3", cassVersion{1, 2, 3, ""}},
+		{"4.0-rc2", cassVersion{4, 0, 0, "rc2"}},
+		{"4.3.2-rc1", cassVersion{4, 3, 2, "rc1"}},
+		{"4.3.2-rc1-qualifier1", cassVersion{4, 3, 2, "rc1-qualifier1"}},
+		{"4.3-rc1-qualifier1", cassVersion{4, 3, 0, "rc1-qualifier1"}},
 	}
 
 	for i, test := range tests {
@@ -29,6 +58,7 @@ func TestUnmarshalCassVersion(t *testing.T) {
 		} else if *v != test.version {
 			t.Errorf("%d: expected %#+v got %#+v", i, test.version, *v)
 		}
+		fmt.Println(v.String())
 	}
 }
 
@@ -36,14 +66,17 @@ func TestCassVersionBefore(t *testing.T) {
 	tests := [...]struct {
 		version             cassVersion
 		major, minor, patch int
+		Qualifier           string
 	}{
-		{cassVersion{1, 0, 0}, 0, 0, 0},
-		{cassVersion{0, 1, 0}, 0, 0, 0},
-		{cassVersion{0, 0, 1}, 0, 0, 0},
+		{cassVersion{1, 0, 0, ""}, 0, 0, 0, ""},
+		{cassVersion{0, 1, 0, ""}, 0, 0, 0, ""},
+		{cassVersion{0, 0, 1, ""}, 0, 0, 0, ""},
 
-		{cassVersion{1, 0, 0}, 0, 1, 0},
-		{cassVersion{0, 1, 0}, 0, 0, 1},
-		{cassVersion{4, 1, 0}, 3, 1, 2},
+		{cassVersion{1, 0, 0, ""}, 0, 1, 0, ""},
+		{cassVersion{0, 1, 0, ""}, 0, 0, 1, ""},
+		{cassVersion{4, 1, 0, ""}, 3, 1, 2, ""},
+
+		{cassVersion{4, 1, 0, ""}, 3, 1, 2, ""},
 	}
 
 	for i, test := range tests {

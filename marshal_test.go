@@ -1,11 +1,36 @@
 //go:build all || unit
 // +build all unit
 
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
+
 package gocql
 
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"math/big"
 	"net"
@@ -15,6 +40,8 @@ import (
 	"time"
 
 	"gopkg.in/inf.v0"
+
+	"github.com/stretchr/testify/require"
 )
 
 type AliasInt int
@@ -1325,7 +1352,7 @@ func TestMarshal_Encode(t *testing.T) {
 			}
 		} else {
 			if _, err := Marshal(test.Info, test.Value); err != test.MarshalError {
-				t.Errorf("unmarshalTest[%d] (%v=>%t): %#v returned error %#v, want %#v.", i, test.Info, test.Value, test.Value, err, test.MarshalError)
+				t.Errorf("marshalTest[%d] (%v=>%t): %#v returned error %#v, want %#v.", i, test.Info, test.Value, test.Value, err, test.MarshalError)
 			}
 		}
 	}
@@ -1509,6 +1536,32 @@ func TestMarshalVarint(t *testing.T) {
 			t.Errorf("unmarshaled varint mismatch: expected %v, got %v (test #%d)", test.Unmarshaled, binder, i)
 		}
 	}
+}
+
+func TestMarshalBigInt(t *testing.T) {
+	var testStruct = []struct {
+		Info         TypeInfo
+		Value        interface{}
+		MarshalError error
+	}{
+		{
+			NativeType{proto: 2, typ: TypeBigInt},
+			"-78635384813432117863538481343211",
+			MarshalError("can not marshal string to bigint: strconv.ParseInt: parsing \"-78635384813432117863538481343211\": value out of range"),
+		},
+		{
+			NativeType{proto: 2, typ: TypeBigInt},
+			"922337203685477692259749625974294",
+			MarshalError("can not marshal string to bigint: strconv.ParseInt: parsing \"922337203685477692259749625974294\": value out of range"),
+		},
+	}
+
+	t.Run("testMarshalBigInt", func(t *testing.T) {
+		for _, tc := range testStruct {
+			_, err := Marshal(tc.Info, tc.Value)
+			require.Equal(t, tc.MarshalError, err)
+		}
+	})
 }
 
 func equalStringPointerSlice(leftList, rightList []*string) bool {
@@ -2452,6 +2505,37 @@ func TestReadCollectionSize(t *testing.T) {
 				if size != test.expectedSize {
 					t.Fatalf("Expected size of %d, but got %d", test.expectedSize, size)
 				}
+			}
+		})
+	}
+}
+
+func TestReadUnsignedVInt(t *testing.T) {
+	tests := []struct {
+		decodedInt  uint64
+		encodedVint []byte
+	}{
+		{
+			decodedInt:  0,
+			encodedVint: []byte{0},
+		},
+		{
+			decodedInt:  100,
+			encodedVint: []byte{100},
+		},
+		{
+			decodedInt:  256000,
+			encodedVint: []byte{195, 232, 0},
+		},
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("%d", test.decodedInt), func(t *testing.T) {
+			actual, _, err := readUnsignedVInt(test.encodedVint)
+			if err != nil {
+				t.Fatalf("Expected no error, got %v", err)
+			}
+			if actual != test.decodedInt {
+				t.Fatalf("Expected %d, but got %d", test.decodedInt, actual)
 			}
 		})
 	}

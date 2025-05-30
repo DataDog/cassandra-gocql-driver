@@ -1,10 +1,30 @@
-// Copyright (c) 2012 The gocql Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2012, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
 
 package gocql
 
-//This file will be the future home for more policies
+// This file will be the future home for more policies
 
 import (
 	"context"
@@ -16,8 +36,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/hailocab/go-hostpool"
 )
 
 // cowHostList implements a copy on write host list, its equivalent type is []*HostInfo
@@ -139,7 +157,7 @@ type RetryPolicy interface {
 //	//Assign to a query
 //	query.RetryPolicy(&gocql.SimpleRetryPolicy{NumRetries: 1})
 type SimpleRetryPolicy struct {
-	NumRetries int //Number of times to retry a query
+	NumRetries int // Number of times to retry a query
 }
 
 // Attempt tells gocql to attempt the query again based on query.Attempts being less
@@ -305,6 +323,7 @@ func (host *selectedHost) Info() *HostInfo {
 func (host *selectedHost) Mark(err error) {}
 
 // NextHost is an iteration function over picked hosts
+// Should return nil eventually to prevent endless query execution.
 type NextHost func() SelectedHost
 
 // RoundRobinHostPolicy is a round-robin load balancing policy, where each host
@@ -535,147 +554,6 @@ func (t *tokenAwareHostPolicy) Pick(qry ExecutableQuery) NextHost {
 	}
 }
 
-// HostPoolHostPolicy is a host policy which uses the bitly/go-hostpool library
-// to distribute queries between hosts and prevent sending queries to
-// unresponsive hosts. When creating the host pool that is passed to the policy
-// use an empty slice of hosts as the hostpool will be populated later by gocql.
-// See below for examples of usage:
-//
-//	// Create host selection policy using a simple host pool
-//	cluster.PoolConfig.HostSelectionPolicy = HostPoolHostPolicy(hostpool.New(nil))
-//
-//	// Create host selection policy using an epsilon greedy pool
-//	cluster.PoolConfig.HostSelectionPolicy = HostPoolHostPolicy(
-//	    hostpool.NewEpsilonGreedy(nil, 0, &hostpool.LinearEpsilonValueCalculator{}),
-//	)
-func HostPoolHostPolicy(hp hostpool.HostPool) HostSelectionPolicy {
-	return &hostPoolHostPolicy{hostMap: map[string]*HostInfo{}, hp: hp}
-}
-
-type hostPoolHostPolicy struct {
-	hp      hostpool.HostPool
-	mu      sync.RWMutex
-	hostMap map[string]*HostInfo
-}
-
-func (r *hostPoolHostPolicy) Init(*Session)                       {}
-func (r *hostPoolHostPolicy) KeyspaceChanged(KeyspaceUpdateEvent) {}
-func (r *hostPoolHostPolicy) SetPartitioner(string)               {}
-func (r *hostPoolHostPolicy) IsLocal(*HostInfo) bool              { return true }
-
-func (r *hostPoolHostPolicy) SetHosts(hosts []*HostInfo) {
-	peers := make([]string, len(hosts))
-	hostMap := make(map[string]*HostInfo, len(hosts))
-
-	for i, host := range hosts {
-		ip := host.ConnectAddress().String()
-		peers[i] = ip
-		hostMap[ip] = host
-	}
-
-	r.mu.Lock()
-	r.hp.SetHosts(peers)
-	r.hostMap = hostMap
-	r.mu.Unlock()
-}
-
-func (r *hostPoolHostPolicy) AddHost(host *HostInfo) {
-	ip := host.ConnectAddress().String()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// If the host addr is present and isn't nil return
-	if h, ok := r.hostMap[ip]; ok && h != nil {
-		return
-	}
-	// otherwise, add the host to the map
-	r.hostMap[ip] = host
-	// and construct a new peer list to give to the HostPool
-	hosts := make([]string, 0, len(r.hostMap))
-	for addr := range r.hostMap {
-		hosts = append(hosts, addr)
-	}
-
-	r.hp.SetHosts(hosts)
-}
-
-func (r *hostPoolHostPolicy) RemoveHost(host *HostInfo) {
-	ip := host.ConnectAddress().String()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if _, ok := r.hostMap[ip]; !ok {
-		return
-	}
-
-	delete(r.hostMap, ip)
-	hosts := make([]string, 0, len(r.hostMap))
-	for _, host := range r.hostMap {
-		hosts = append(hosts, host.ConnectAddress().String())
-	}
-
-	r.hp.SetHosts(hosts)
-}
-
-func (r *hostPoolHostPolicy) HostUp(host *HostInfo) {
-	r.AddHost(host)
-}
-
-func (r *hostPoolHostPolicy) HostDown(host *HostInfo) {
-	r.RemoveHost(host)
-}
-
-func (r *hostPoolHostPolicy) Pick(qry ExecutableQuery) NextHost {
-	return func() SelectedHost {
-		r.mu.RLock()
-		defer r.mu.RUnlock()
-
-		if len(r.hostMap) == 0 {
-			return nil
-		}
-
-		hostR := r.hp.Get()
-		host, ok := r.hostMap[hostR.Host()]
-		if !ok {
-			return nil
-		}
-
-		return selectedHostPoolHost{
-			policy: r,
-			info:   host,
-			hostR:  hostR,
-		}
-	}
-}
-
-// selectedHostPoolHost is a host returned by the hostPoolHostPolicy and
-// implements the SelectedHost interface
-type selectedHostPoolHost struct {
-	policy *hostPoolHostPolicy
-	info   *HostInfo
-	hostR  hostpool.HostPoolResponse
-}
-
-func (host selectedHostPoolHost) Info() *HostInfo {
-	return host.info
-}
-
-func (host selectedHostPoolHost) Mark(err error) {
-	ip := host.info.ConnectAddress().String()
-
-	host.policy.mu.RLock()
-	defer host.policy.mu.RUnlock()
-
-	if _, ok := host.policy.hostMap[ip]; !ok {
-		// host was removed between pick and mark
-		return
-	}
-
-	host.hostR.Mark(err)
-}
-
 type dcAwareRR struct {
 	local           string
 	localHosts      cowHostList
@@ -684,8 +562,8 @@ type dcAwareRR struct {
 }
 
 // DCAwareRoundRobinPolicy is a host selection policies which will prioritize and
-// return hosts which are in the local datacentre before returning hosts in all
-// other datercentres
+// return hosts which are in the local datacenter before returning hosts in all
+// other datacenters
 func DCAwareRoundRobinPolicy(localDC string) HostSelectionPolicy {
 	return &dcAwareRR{local: localDC}
 }
@@ -730,7 +608,6 @@ func roundRobbin(shift int, hosts ...[]*HostInfo) NextHost {
 	currentlyObserved := 0
 
 	return func() SelectedHost {
-
 		// iterate over layers
 		for {
 			if currentLayer == len(hosts) {
@@ -766,7 +643,7 @@ func (d *dcAwareRR) Pick(q ExecutableQuery) NextHost {
 
 // RackAwareRoundRobinPolicy is a host selection policies which will prioritize and
 // return hosts which are in the local rack, before hosts in the local datacenter but
-// a different rack, before hosts in all other datercentres
+// a different rack, before hosts in all other datacenters
 
 type rackAwareRR struct {
 	// lastUsedHostIdx keeps the index of the last used host.
@@ -876,14 +753,13 @@ func (s *singleHostReadyPolicy) Ready() bool {
 type ConvictionPolicy interface {
 	// Implementations should return `true` if the host should be convicted, `false` otherwise.
 	AddFailure(error error, host *HostInfo) bool
-	//Implementations should clear out any convictions or state regarding the host.
+	// Implementations should clear out any convictions or state regarding the host.
 	Reset(host *HostInfo)
 }
 
 // SimpleConvictionPolicy implements a ConvictionPolicy which convicts all hosts
 // regardless of error
-type SimpleConvictionPolicy struct {
-}
+type SimpleConvictionPolicy struct{}
 
 func (e *SimpleConvictionPolicy) AddFailure(error error, host *HostInfo) bool {
 	return true

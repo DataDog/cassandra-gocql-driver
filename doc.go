@@ -1,6 +1,26 @@
-// Copyright (c) 2012-2015 The gocql Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
 
 // Package gocql implements a fast and robust Cassandra driver for the
 // Go programming language.
@@ -60,6 +80,16 @@
 //	 	return err
 //	 }
 //	 defer session.Close()
+//
+// By default, PasswordAuthenticator will attempt to authenticate regardless of what implementation the server returns
+// in its AUTHENTICATE message as its authenticator, (e.g. org.apache.cassandra.auth.PasswordAuthenticator).  If you
+// wish to restrict this you may use PasswordAuthenticator.AllowedAuthenticators:
+//
+//	 cluster.Authenticator = gocql.PasswordAuthenticator {
+//			Username:              "user",
+//			Password:              "password"
+//			AllowedAuthenticators: []string{"org.apache.cassandra.auth.PasswordAuthenticator"},
+//	 }
 //
 // # Transport layer security
 //
@@ -241,7 +271,7 @@
 //
 // # Paging
 //
-// The driver supports paging of results with automatic prefetch, see ClusterConfig.PageSize, Session.SetPrefetch,
+// The driver supports paging of results with automatic prefetch, see ClusterConfig.PageSize,
 // Query.PageSize, and Query.Prefetch.
 //
 // It is also possible to control the paging manually with Query.PageState (this disables automatic prefetch).
@@ -280,8 +310,8 @@
 // # Batches
 //
 // The CQL protocol supports sending batches of DML statements (INSERT/UPDATE/DELETE) and so does gocql.
-// Use Session.NewBatch to create a new batch and then fill-in details of individual queries.
-// Then execute the batch with Session.ExecuteBatch.
+// Use Session.Batch to create a new batch and then fill-in details of individual queries.
+// Then execute the batch with Batch.Exec.
 //
 // Logged batches ensure atomicity, either all or none of the operations in the batch will succeed, but they have
 // overhead to ensure this property.
@@ -299,8 +329,8 @@
 // It is also possible to pass entire BEGIN BATCH .. APPLY BATCH statement to Query.Exec.
 // There are differences how those are executed.
 // BEGIN BATCH statement passed to Query.Exec is prepared as a whole in a single statement.
-// Session.ExecuteBatch prepares individual statements in the batch.
-// If you have variable-length batches using the same statement, using Session.ExecuteBatch is more efficient.
+// Batch.Exec prepares individual statements in the batch.
+// If you have variable-length batches using the same statement, using Batch.Exec is more efficient.
 //
 // See Example_batch for an example.
 //
@@ -310,9 +340,9 @@
 // INSERT/UPDATE .. IF statement) and reading its result. See example for Query.MapScanCAS.
 //
 // Multiple-statement lightweight transactions can be executed as a logged batch that contains at least one conditional
-// statement. All the conditions must return true for the batch to be applied. You can use Session.ExecuteBatchCAS and
-// Session.MapExecuteBatchCAS when executing the batch to learn about the result of the LWT. See example for
-// Session.MapExecuteBatchCAS.
+// statement. All the conditions must return true for the batch to be applied. You can use Batch.ExecCAS and
+// Batch.MapExecCAS when executing the batch to learn about the result of the LWT. See example for
+// Batch.MapExecCAS.
 //
 // # Retries and speculative execution
 //

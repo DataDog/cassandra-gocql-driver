@@ -2,6 +2,30 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
+
 package gocql
 
 import (
@@ -612,12 +636,14 @@ func TestTypeParser(t *testing.T) {
 		},
 	)
 
-	// custom
+	// udt
 	assertParseNonCompositeType(
 		t,
 		"org.apache.cassandra.db.marshal.UserType(sandbox,61646472657373,737472656574:org.apache.cassandra.db.marshal.UTF8Type,63697479:org.apache.cassandra.db.marshal.UTF8Type,7a6970:org.apache.cassandra.db.marshal.Int32Type)",
-		assertTypeInfo{Type: TypeCustom, Custom: "org.apache.cassandra.db.marshal.UserType(sandbox,61646472657373,737472656574:org.apache.cassandra.db.marshal.UTF8Type,63697479:org.apache.cassandra.db.marshal.UTF8Type,7a6970:org.apache.cassandra.db.marshal.Int32Type)"},
+		assertTypeInfo{Type: TypeUDT, Custom: ""},
 	)
+
+	// custom
 	assertParseNonCompositeType(
 		t,
 		"org.apache.cassandra.db.marshal.DynamicCompositeType(u=>org.apache.cassandra.db.marshal.UUIDType,d=>org.apache.cassandra.db.marshal.DateType,t=>org.apache.cassandra.db.marshal.TimeUUIDType,b=>org.apache.cassandra.db.marshal.BytesType,s=>org.apache.cassandra.db.marshal.UTF8Type,B=>org.apache.cassandra.db.marshal.BooleanType,a=>org.apache.cassandra.db.marshal.AsciiType,l=>org.apache.cassandra.db.marshal.LongType,i=>org.apache.cassandra.db.marshal.IntegerType,x=>org.apache.cassandra.db.marshal.LexicalUUIDType)",
@@ -676,7 +702,7 @@ func assertParseNonCompositeType(
 ) {
 
 	log := &defaultLogger{}
-	result := parseType(def, log)
+	result := parseType(def, protoVersion4, log)
 	if len(result.reversed) != 1 {
 		t.Errorf("%s expected %d reversed values but there were %d", def, 1, len(result.reversed))
 	}
@@ -707,7 +733,7 @@ func assertParseCompositeType(
 ) {
 
 	log := &defaultLogger{}
-	result := parseType(def, log)
+	result := parseType(def, protoVersion4, log)
 	if len(result.reversed) != len(typesExpected) {
 		t.Errorf("%s expected %d reversed values but there were %d", def, len(typesExpected), len(result.reversed))
 	}
@@ -723,7 +749,7 @@ func assertParseCompositeType(
 	if !result.isComposite {
 		t.Errorf("%s: Expected composite", def)
 	}
-	if result.collections == nil {
+	if result.collections == nil && collectionsExpected != nil {
 		t.Errorf("%s: Expected non-nil collections: %v", def, result.collections)
 	}
 

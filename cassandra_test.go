@@ -1,6 +1,30 @@
 //go:build all || cassandra
 // +build all cassandra
 
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
+
 package gocql
 
 import (
@@ -21,6 +45,8 @@ import (
 	"unicode"
 
 	inf "gopkg.in/inf.v0"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestEmptyHosts(t *testing.T) {
@@ -126,11 +152,10 @@ func TestTracing(t *testing.T) {
 	}
 
 	// also works from session tracer
-	session.SetTrace(trace)
 	trace.mu.Lock()
 	buf.Reset()
 	trace.mu.Unlock()
-	if err := session.Query(`SELECT id FROM trace WHERE id = ?`, 42).Scan(&value); err != nil {
+	if err := session.Query(`SELECT id FROM trace WHERE id = ?`, 42).Trace(trace).Scan(&value); err != nil {
 		t.Fatal("select:", err)
 	}
 	if buf.Len() == 0 {
@@ -429,45 +454,45 @@ func TestCAS(t *testing.T) {
 		t.Fatal("truncate:", err)
 	}
 
-	successBatch := session.NewBatch(LoggedBatch)
+	successBatch := session.Batch(LoggedBatch)
 	successBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES (?, ?, ?) IF NOT EXISTS", title, revid, modified)
-	if applied, _, err := session.ExecuteBatchCAS(successBatch, &titleCAS, &revidCAS, &modifiedCAS); err != nil {
+	if applied, _, err := successBatch.ExecCAS(&titleCAS, &revidCAS, &modifiedCAS); err != nil {
 		t.Fatal("insert:", err)
 	} else if !applied {
 		t.Fatalf("insert should have been applied: title=%v revID=%v modified=%v", titleCAS, revidCAS, modifiedCAS)
 	}
 
-	successBatch = session.NewBatch(LoggedBatch)
+	successBatch = session.Batch(LoggedBatch)
 	successBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES (?, ?, ?) IF NOT EXISTS", title+"_foo", revid, modified)
 	casMap := make(map[string]interface{})
-	if applied, _, err := session.MapExecuteBatchCAS(successBatch, casMap); err != nil {
+	if applied, _, err := successBatch.MapExecCAS(casMap); err != nil {
 		t.Fatal("insert:", err)
 	} else if !applied {
 		t.Fatal("insert should have been applied")
 	}
 
-	failBatch := session.NewBatch(LoggedBatch)
+	failBatch := session.Batch(LoggedBatch)
 	failBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES (?, ?, ?) IF NOT EXISTS", title, revid, modified)
-	if applied, _, err := session.ExecuteBatchCAS(successBatch, &titleCAS, &revidCAS, &modifiedCAS); err != nil {
+	if applied, _, err := successBatch.ExecCAS(&titleCAS, &revidCAS, &modifiedCAS); err != nil {
 		t.Fatal("insert:", err)
 	} else if applied {
-		t.Fatalf("insert should have been applied: title=%v revID=%v modified=%v", titleCAS, revidCAS, modifiedCAS)
+		t.Fatalf("insert should have not been applied: title=%v revID=%v modified=%v", titleCAS, revidCAS, modifiedCAS)
 	}
 
-	insertBatch := session.NewBatch(LoggedBatch)
-	insertBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES ('_foo', 2c3af400-73a4-11e5-9381-29463d90c3f0, DATEOF(NOW()))")
-	insertBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES ('_foo', 3e4ad2f1-73a4-11e5-9381-29463d90c3f0, DATEOF(NOW()))")
-	if err := session.ExecuteBatch(insertBatch); err != nil {
+	insertBatch := session.Batch(LoggedBatch)
+	insertBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES ('_foo', 2c3af400-73a4-11e5-9381-29463d90c3f0, TOTIMESTAMP(NOW()))")
+	insertBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES ('_foo', 3e4ad2f1-73a4-11e5-9381-29463d90c3f0, TOTIMESTAMP(NOW()))")
+	if err := insertBatch.Exec(); err != nil {
 		t.Fatal("insert:", err)
 	}
 
-	failBatch = session.NewBatch(LoggedBatch)
-	failBatch.Query("UPDATE cas_table SET last_modified = DATEOF(NOW()) WHERE title='_foo' AND revid=2c3af400-73a4-11e5-9381-29463d90c3f0 IF last_modified=DATEOF(NOW());")
-	failBatch.Query("UPDATE cas_table SET last_modified = DATEOF(NOW()) WHERE title='_foo' AND revid=3e4ad2f1-73a4-11e5-9381-29463d90c3f0 IF last_modified=DATEOF(NOW());")
-	if applied, iter, err := session.ExecuteBatchCAS(failBatch, &titleCAS, &revidCAS, &modifiedCAS); err != nil {
+	failBatch = session.Batch(LoggedBatch)
+	failBatch.Query("UPDATE cas_table SET last_modified = TOTIMESTAMP(NOW()) WHERE title='_foo' AND revid=2c3af400-73a4-11e5-9381-29463d90c3f0 IF last_modified=TOTIMESTAMP(NOW());")
+	failBatch.Query("UPDATE cas_table SET last_modified = TOTIMESTAMP(NOW()) WHERE title='_foo' AND revid=3e4ad2f1-73a4-11e5-9381-29463d90c3f0 IF last_modified=TOTIMESTAMP(NOW());")
+	if applied, iter, err := failBatch.ExecCAS(&titleCAS, &revidCAS, &modifiedCAS); err != nil {
 		t.Fatal("insert:", err)
 	} else if applied {
-		t.Fatalf("insert should have been applied: title=%v revID=%v modified=%v", titleCAS, revidCAS, modifiedCAS)
+		t.Fatalf("insert should have not been applied: title=%v revID=%v modified=%v", titleCAS, revidCAS, modifiedCAS)
 	} else {
 		if scan := iter.Scan(&applied, &titleCAS, &revidCAS, &modifiedCAS); scan && applied {
 			t.Fatalf("insert should have been applied: title=%v revID=%v modified=%v", titleCAS, revidCAS, modifiedCAS)
@@ -477,6 +502,141 @@ func TestCAS(t *testing.T) {
 		if err := iter.Close(); err != nil {
 			t.Fatal("scan:", err)
 		}
+	}
+
+	casMap = make(map[string]interface{})
+	if applied, err := session.Query(`SELECT revid FROM cas_table WHERE title = ?`,
+		title+"_foo").MapScanCAS(casMap); err != nil {
+		t.Fatal("select:", err)
+	} else if applied {
+		t.Fatal("select shouldn't have returned applied")
+	}
+
+	if _, err := session.Query(`SELECT revid FROM cas_table WHERE title = ?`,
+		title+"_foo").ScanCAS(&revidCAS); err == nil {
+		t.Fatal("select: should have returned an error")
+	}
+
+	notCASBatch := session.Batch(LoggedBatch)
+	notCASBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES (?, ?, ?)", title+"_baz", revid, modified)
+	casMap = make(map[string]interface{})
+	if _, _, err := notCASBatch.MapExecCAS(casMap); err != ErrNotFound {
+		t.Fatal("insert should have returned not found:", err)
+	}
+
+	notCASBatch = session.Batch(LoggedBatch)
+	notCASBatch.Query("INSERT INTO cas_table (title, revid, last_modified) VALUES (?, ?, ?)", title+"_baz", revid, modified)
+	casMap = make(map[string]interface{})
+	if _, _, err := notCASBatch.ExecCAS(&revidCAS); err != ErrNotFound {
+		t.Fatal("insert should have returned not found:", err)
+	}
+
+	failBatch = session.Batch(LoggedBatch)
+	failBatch.Query("UPDATE cas_table SET last_modified = TOTIMESTAMP(NOW()) WHERE title='_foo' AND revid=3e4ad2f1-73a4-11e5-9381-29463d90c3f0 IF last_modified = ?", modified)
+	if _, _, err := failBatch.ExecCAS(new(bool)); err == nil {
+		t.Fatal("update should have errored")
+	}
+	// make sure MapScanCAS does not panic when MapScan fails
+	casMap = make(map[string]interface{})
+	casMap["last_modified"] = false
+	if _, err := session.Query(`UPDATE cas_table SET last_modified = TOTIMESTAMP(NOW()) WHERE title='_foo' AND revid=3e4ad2f1-73a4-11e5-9381-29463d90c3f0 IF last_modified = ?`,
+		modified).MapScanCAS(casMap); err == nil {
+		t.Fatal("update should hvae errored", err)
+	}
+
+	// make sure MapExecuteBatchCAS does not panic when MapScan fails
+	failBatch = session.Batch(LoggedBatch)
+	failBatch.Query("UPDATE cas_table SET last_modified = TOTIMESTAMP(NOW()) WHERE title='_foo' AND revid=3e4ad2f1-73a4-11e5-9381-29463d90c3f0 IF last_modified = ?", modified)
+	casMap = make(map[string]interface{})
+	casMap["last_modified"] = false
+	if _, _, err := failBatch.MapExecCAS(casMap); err == nil {
+		t.Fatal("update should have errored")
+	}
+}
+
+func TestConsistencySerial(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	type testStruct struct {
+		name               string
+		id                 int
+		consistency        Consistency
+		expectedPanicValue string
+	}
+
+	testCases := []testStruct{
+		{
+			name:               "Any",
+			consistency:        Any,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got ANY",
+		}, {
+			name:               "One",
+			consistency:        One,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got ONE",
+		}, {
+			name:               "Two",
+			consistency:        Two,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got TWO",
+		}, {
+			name:               "Three",
+			consistency:        Three,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got THREE",
+		}, {
+			name:               "Quorum",
+			consistency:        Quorum,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got QUORUM",
+		}, {
+			name:               "LocalQuorum",
+			consistency:        LocalQuorum,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got LOCAL_QUORUM",
+		}, {
+			name:               "EachQuorum",
+			consistency:        EachQuorum,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got EACH_QUORUM",
+		}, {
+			name:               "Serial",
+			id:                 8,
+			consistency:        Serial,
+			expectedPanicValue: "",
+		}, {
+			name:               "LocalSerial",
+			id:                 9,
+			consistency:        LocalSerial,
+			expectedPanicValue: "",
+		}, {
+			name:               "LocalOne",
+			consistency:        LocalOne,
+			expectedPanicValue: "serial consistency can only be SERIAL or LOCAL_SERIAL got LOCAL_ONE",
+		},
+	}
+
+	err := session.Query("CREATE TABLE IF NOT EXISTS gocql_test.consistency_serial (id int PRIMARY KEY)").Exec()
+	if err != nil {
+		t.Fatalf("can't create consistency_serial table:%v", err)
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.expectedPanicValue == "" {
+				err = session.Query("INSERT INTO gocql_test.consistency_serial (id) VALUES (?)", tc.id).SerialConsistency(tc.consistency).Exec()
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				var receivedID int
+				err = session.Query("SELECT * FROM gocql_test.consistency_serial WHERE id=?", tc.id).Scan(&receivedID)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				require.Equal(t, tc.id, receivedID)
+			} else {
+				require.PanicsWithValue(t, tc.expectedPanicValue, func() {
+					session.Query("INSERT INTO gocql_test.consistency_serial (id) VALUES (?)", tc.id).SerialConsistency(tc.consistency)
+				})
+			}
+		})
 	}
 }
 
@@ -586,12 +746,12 @@ func TestBatch(t *testing.T) {
 		t.Fatal("create table:", err)
 	}
 
-	batch := session.NewBatch(LoggedBatch)
+	batch := session.Batch(LoggedBatch)
 	for i := 0; i < 100; i++ {
 		batch.Query(`INSERT INTO batch_table (id) VALUES (?)`, i)
 	}
 
-	if err := session.ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		t.Fatal("execute batch:", err)
 	}
 
@@ -618,16 +778,16 @@ func TestUnpreparedBatch(t *testing.T) {
 
 	var batch *Batch
 	if session.cfg.ProtoVersion == 2 {
-		batch = session.NewBatch(CounterBatch)
+		batch = session.Batch(CounterBatch)
 	} else {
-		batch = session.NewBatch(UnloggedBatch)
+		batch = session.Batch(UnloggedBatch)
 	}
 
 	for i := 0; i < 100; i++ {
 		batch.Query(`UPDATE batch_unprepared SET c = c + 1 WHERE id = 1`)
 	}
 
-	if err := session.ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		t.Fatal("execute batch:", err)
 	}
 
@@ -659,12 +819,12 @@ func TestBatchLimit(t *testing.T) {
 		t.Fatal("create table:", err)
 	}
 
-	batch := session.NewBatch(LoggedBatch)
+	batch := session.Batch(LoggedBatch)
 	for i := 0; i < 65537; i++ {
 		batch.Query(`INSERT INTO batch_table2 (id) VALUES (?)`, i)
 	}
-	if err := session.ExecuteBatch(batch); err != ErrTooManyStmts {
-		t.Fatal("gocql attempted to execute a batch larger than the support limit of statements.")
+	if err := batch.Exec(); err != ErrTooManyStmts {
+		t.Fatalf("gocql attempted to execute a batch larger than the support limit of statements: expected %v, got %v", ErrTooManyStmts, err)
 	}
 
 }
@@ -713,9 +873,9 @@ func TestTooManyQueryArgs(t *testing.T) {
 		t.Fatal("'`SELECT * FROM too_many_query_args WHERE id = ?`, 1, 2' should return an error")
 	}
 
-	batch := session.NewBatch(UnloggedBatch)
+	batch := session.Batch(UnloggedBatch)
 	batch.Query("INSERT INTO too_many_query_args (id, value) VALUES (?, ?)", 1, 2, 3)
-	err = session.ExecuteBatch(batch)
+	err = batch.Exec()
 
 	if err == nil {
 		t.Fatal("'`INSERT INTO too_many_query_args (id, value) VALUES (?, ?)`, 1, 2, 3' should return an error")
@@ -745,9 +905,9 @@ func TestNotEnoughQueryArgs(t *testing.T) {
 		t.Fatal("'`SELECT * FROM not_enough_query_args WHERE id = ? and cluster = ?`, 1' should return an error")
 	}
 
-	batch := session.NewBatch(UnloggedBatch)
+	batch := session.Batch(UnloggedBatch)
 	batch.Query("INSERT INTO not_enough_query_args (id, cluster, value) VALUES (?, ?, ?)", 1, 2)
-	err = session.ExecuteBatch(batch)
+	err = batch.Exec()
 
 	if err == nil {
 		t.Fatal("'`INSERT INTO not_enough_query_args (id, cluster, value) VALUES (?, ?, ?)`, 1, 2' should return an error")
@@ -885,6 +1045,7 @@ func TestMapScan(t *testing.T) {
 			fullname       text PRIMARY KEY,
 			age            int,
 			address        inet,
+			data           blob,
 		)`); err != nil {
 		t.Fatal("create table:", err)
 	}
@@ -893,8 +1054,8 @@ func TestMapScan(t *testing.T) {
 		"Grace Hopper", 31, net.ParseIP("10.0.0.1")).Exec(); err != nil {
 		t.Fatal("insert:", err)
 	}
-	if err := session.Query(`INSERT INTO scan_map_table (fullname, age, address) values (?,?,?)`,
-		"Ada Lovelace", 30, net.ParseIP("10.0.0.2")).Exec(); err != nil {
+	if err := session.Query(`INSERT INTO scan_map_table (fullname, age, address, data) values (?,?,?,?)`,
+		"Ada Lovelace", 30, net.ParseIP("10.0.0.2"), []byte(`{"foo": "bar"}`)).Exec(); err != nil {
 		t.Fatal("insert:", err)
 	}
 
@@ -908,6 +1069,7 @@ func TestMapScan(t *testing.T) {
 	assertEqual(t, "fullname", "Ada Lovelace", row["fullname"])
 	assertEqual(t, "age", 30, row["age"])
 	assertEqual(t, "address", "10.0.0.2", row["address"])
+	assertDeepEqual(t, "data", []byte(`{"foo": "bar"}`), row["data"])
 
 	// Second iteration using a new map
 	row = make(map[string]interface{})
@@ -917,6 +1079,7 @@ func TestMapScan(t *testing.T) {
 	assertEqual(t, "fullname", "Grace Hopper", row["fullname"])
 	assertEqual(t, "age", 31, row["age"])
 	assertEqual(t, "address", "10.0.0.1", row["address"])
+	assertDeepEqual(t, "data", []byte(nil), row["data"])
 }
 
 func TestSliceMap(t *testing.T) {
@@ -1039,6 +1202,55 @@ func matchSliceMap(t *testing.T, sliceMap []map[string]interface{}, testMap map[
 	}
 	if sliceMap[0]["testint"] != testMap["testint"] {
 		t.Fatal("returned testint did not match")
+	}
+}
+
+type MyRetryPolicy struct {
+}
+
+func (*MyRetryPolicy) Attempt(q RetryableQuery) bool {
+	if q.Attempts() > 5 {
+		return false
+	}
+	return true
+}
+
+func (*MyRetryPolicy) GetRetryType(error) RetryType {
+	return Retry
+}
+
+func Test_RetryPolicyIdempotence(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	testCases := []struct {
+		name                  string
+		idempotency           bool
+		expectedNumberOfTries int
+	}{
+		{
+			name:                  "with retry",
+			idempotency:           true,
+			expectedNumberOfTries: 6,
+		},
+		{
+			name:                  "without retry",
+			idempotency:           false,
+			expectedNumberOfTries: 1,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			q := session.Query("INSERT INTO  gocql_test.not_existing_table(event_id, time, args) VALUES (?,?,?)", 4, UUIDFromTime(time.Now()), "test")
+
+			q.Idempotent(tc.idempotency)
+			q.RetryPolicy(&MyRetryPolicy{})
+			q.Consistency(All)
+
+			_ = q.Exec()
+			require.Equal(t, tc.expectedNumberOfTries, q.Attempts())
+		})
 	}
 }
 
@@ -1318,10 +1530,10 @@ func TestBatchQueryInfo(t *testing.T) {
 		return values, nil
 	}
 
-	batch := session.NewBatch(LoggedBatch)
+	batch := session.Batch(LoggedBatch)
 	batch.Bind("INSERT INTO batch_query_info (id, cluster, value) VALUES (?, ?,?)", write)
 
-	if err := session.ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		t.Fatalf("batch insert into batch_query_info failed, err '%v'", err)
 	}
 
@@ -1446,7 +1658,7 @@ func TestPrepare_ReprepareBatch(t *testing.T) {
 	}
 
 	stmt, conn := injectInvalidPreparedStatement(t, session, "test_reprepare_statement_batch")
-	batch := session.NewBatch(UnloggedBatch)
+	batch := session.Batch(UnloggedBatch)
 	batch.Query(stmt, "bar")
 	if err := conn.executeBatch(ctx, batch).Close(); err != nil {
 		t.Fatalf("Failed to execute query for reprepare statement: %v", err)
@@ -1458,7 +1670,7 @@ func TestQueryInfo(t *testing.T) {
 	defer session.Close()
 
 	conn := getRandomConn(t, session)
-	info, err := conn.prepareStatement(context.Background(), "SELECT release_version, host_id FROM system.local WHERE key = ?", nil)
+	info, err := conn.prepareStatement(context.Background(), "SELECT release_version, host_id FROM system.local WHERE key = ?", nil, conn.currentKeyspace)
 
 	if err != nil {
 		t.Fatalf("Failed to execute query for preparing statement: %v", err)
@@ -1830,11 +2042,11 @@ func TestBatchStats(t *testing.T) {
 		t.Fatalf("failed to create table with error '%v'", err)
 	}
 
-	b := session.NewBatch(LoggedBatch)
+	b := session.Batch(LoggedBatch)
 	b.Query("INSERT INTO batchStats (id) VALUES (?)", 1)
 	b.Query("INSERT INTO batchStats (id) VALUES (?)", 2)
 
-	if err := session.ExecuteBatch(b); err != nil {
+	if err := b.Exec(); err != nil {
 		t.Fatalf("query failed. %v", err)
 	} else {
 		if b.Attempts() < 1 {
@@ -1873,7 +2085,7 @@ func TestBatchObserve(t *testing.T) {
 
 	var observedBatch *observation
 
-	batch := session.NewBatch(LoggedBatch)
+	batch := session.Batch(LoggedBatch)
 	batch.Observer(funcBatchObserver(func(ctx context.Context, o ObservedBatch) {
 		if observedBatch != nil {
 			t.Fatal("batch observe called more than once")
@@ -1891,7 +2103,7 @@ func TestBatchObserve(t *testing.T) {
 		batch.Query(fmt.Sprintf(`INSERT INTO batch_observe_table (id,other) VALUES (?,%d)`, i), i)
 	}
 
-	if err := session.ExecuteBatch(batch); err != nil {
+	if err := batch.Exec(); err != nil {
 		t.Fatal("execute batch:", err)
 	}
 	if observedBatch == nil {
@@ -2199,48 +2411,9 @@ func TestGetColumnMetadata(t *testing.T) {
 	}
 }
 
-func TestViewMetadata(t *testing.T) {
-	session := createSession(t)
-	defer session.Close()
-	createViews(t, session)
-
-	views, err := getViewsMetadata(session, "gocql_test")
-	if err != nil {
-		t.Fatalf("failed to query view metadata with err: %v", err)
-	}
-	if views == nil {
-		t.Fatal("failed to query view metadata, nil returned")
-	}
-
-	if len(views) != 1 {
-		t.Fatal("expected one view")
-	}
-
-	textType := TypeText
-	if flagCassVersion.Before(3, 0, 0) {
-		textType = TypeVarchar
-	}
-
-	expectedView := ViewMetadata{
-		Keyspace:   "gocql_test",
-		Name:       "basicview",
-		FieldNames: []string{"birthday", "nationality", "weight", "height"},
-		FieldTypes: []TypeInfo{
-			NativeType{typ: TypeTimestamp},
-			NativeType{typ: textType},
-			NativeType{typ: textType},
-			NativeType{typ: textType},
-		},
-	}
-
-	if !reflect.DeepEqual(views[0], expectedView) {
-		t.Fatalf("view is %+v, but expected %+v", views[0], expectedView)
-	}
-}
-
 func TestMaterializedViewMetadata(t *testing.T) {
 	if flagCassVersion.Before(3, 0, 0) {
-		return
+		t.Skip("The Cassandra version is too old")
 	}
 	session := createSession(t)
 	defer session.Close()
@@ -2259,14 +2432,19 @@ func TestMaterializedViewMetadata(t *testing.T) {
 	expectedChunkLengthInKB := "16"
 	expectedDCLocalReadRepairChance := float64(0)
 	expectedSpeculativeRetry := "99p"
+	expectedAdditionalWritePolicy := "99p"
+	expectedReadRepair := "BLOCKING"
 	if flagCassVersion.Before(4, 0, 0) {
 		expectedChunkLengthInKB = "64"
 		expectedDCLocalReadRepairChance = 0.1
 		expectedSpeculativeRetry = "99PERCENTILE"
+		expectedReadRepair = ""
+		expectedAdditionalWritePolicy = ""
 	}
 	expectedView1 := MaterializedViewMetadata{
 		Keyspace:                "gocql_test",
 		Name:                    "view_view",
+		AdditionalWritePolicy:   expectedAdditionalWritePolicy,
 		baseTableName:           "view_table",
 		BloomFilterFpChance:     0.01,
 		Caching:                 map[string]string{"keys": "ALL", "rows_per_partition": "NONE"},
@@ -2278,12 +2456,17 @@ func TestMaterializedViewMetadata(t *testing.T) {
 		DefaultTimeToLive:       0,
 		Extensions:              map[string]string{},
 		GcGraceSeconds:          864000,
-		IncludeAllColumns:       false, MaxIndexInterval: 2048, MemtableFlushPeriodInMs: 0, MinIndexInterval: 128, ReadRepairChance: 0,
-		SpeculativeRetry: expectedSpeculativeRetry,
+		IncludeAllColumns:       false, MaxIndexInterval: 2048,
+		MemtableFlushPeriodInMs: 0,
+		MinIndexInterval:        128,
+		ReadRepair:              expectedReadRepair,
+		ReadRepairChance:        0,
+		SpeculativeRetry:        expectedSpeculativeRetry,
 	}
 	expectedView2 := MaterializedViewMetadata{
 		Keyspace:                "gocql_test",
 		Name:                    "view_view2",
+		AdditionalWritePolicy:   expectedAdditionalWritePolicy,
 		baseTableName:           "view_table2",
 		BloomFilterFpChance:     0.01,
 		Caching:                 map[string]string{"keys": "ALL", "rows_per_partition": "NONE"},
@@ -2295,8 +2478,13 @@ func TestMaterializedViewMetadata(t *testing.T) {
 		DefaultTimeToLive:       0,
 		Extensions:              map[string]string{},
 		GcGraceSeconds:          864000,
-		IncludeAllColumns:       false, MaxIndexInterval: 2048, MemtableFlushPeriodInMs: 0, MinIndexInterval: 128, ReadRepairChance: 0,
-		SpeculativeRetry: expectedSpeculativeRetry,
+		IncludeAllColumns:       false,
+		MaxIndexInterval:        2048,
+		MemtableFlushPeriodInMs: 0,
+		MinIndexInterval:        128,
+		ReadRepair:              expectedReadRepair,
+		ReadRepairChance:        0,
+		SpeculativeRetry:        expectedSpeculativeRetry,
 	}
 
 	expectedView1.BaseTableId = materializedViews[0].BaseTableId
@@ -2327,18 +2515,19 @@ func TestAggregateMetadata(t *testing.T) {
 		t.Fatal("expected two aggregates")
 	}
 
+	protoVer := byte(session.cfg.ProtoVersion)
 	expectedAggregrate := AggregateMetadata{
 		Keyspace:      "gocql_test",
 		Name:          "average",
-		ArgumentTypes: []TypeInfo{NativeType{typ: TypeInt}},
+		ArgumentTypes: []TypeInfo{NativeType{typ: TypeInt, proto: protoVer}},
 		InitCond:      "(0, 0)",
-		ReturnType:    NativeType{typ: TypeDouble},
+		ReturnType:    NativeType{typ: TypeDouble, proto: protoVer},
 		StateType: TupleTypeInfo{
-			NativeType: NativeType{typ: TypeTuple},
+			NativeType: NativeType{typ: TypeTuple, proto: protoVer},
 
 			Elems: []TypeInfo{
-				NativeType{typ: TypeInt},
-				NativeType{typ: TypeBigInt},
+				NativeType{typ: TypeInt, proto: protoVer},
+				NativeType{typ: TypeBigInt, proto: protoVer},
 			},
 		},
 		stateFunc: "avgstate",
@@ -2377,28 +2566,29 @@ func TestFunctionMetadata(t *testing.T) {
 	avgState := functions[1]
 	avgFinal := functions[0]
 
+	protoVer := byte(session.cfg.ProtoVersion)
 	avgStateBody := "if (val !=null) {state.setInt(0, state.getInt(0)+1); state.setLong(1, state.getLong(1)+val.intValue());}return state;"
 	expectedAvgState := FunctionMetadata{
 		Keyspace: "gocql_test",
 		Name:     "avgstate",
 		ArgumentTypes: []TypeInfo{
 			TupleTypeInfo{
-				NativeType: NativeType{typ: TypeTuple},
+				NativeType: NativeType{typ: TypeTuple, proto: protoVer},
 
 				Elems: []TypeInfo{
-					NativeType{typ: TypeInt},
-					NativeType{typ: TypeBigInt},
+					NativeType{typ: TypeInt, proto: protoVer},
+					NativeType{typ: TypeBigInt, proto: protoVer},
 				},
 			},
-			NativeType{typ: TypeInt},
+			NativeType{typ: TypeInt, proto: protoVer},
 		},
 		ArgumentNames: []string{"state", "val"},
 		ReturnType: TupleTypeInfo{
-			NativeType: NativeType{typ: TypeTuple},
+			NativeType: NativeType{typ: TypeTuple, proto: protoVer},
 
 			Elems: []TypeInfo{
-				NativeType{typ: TypeInt},
-				NativeType{typ: TypeBigInt},
+				NativeType{typ: TypeInt, proto: protoVer},
+				NativeType{typ: TypeBigInt, proto: protoVer},
 			},
 		},
 		CalledOnNullInput: true,
@@ -2415,16 +2605,16 @@ func TestFunctionMetadata(t *testing.T) {
 		Name:     "avgfinal",
 		ArgumentTypes: []TypeInfo{
 			TupleTypeInfo{
-				NativeType: NativeType{typ: TypeTuple},
+				NativeType: NativeType{typ: TypeTuple, proto: protoVer},
 
 				Elems: []TypeInfo{
-					NativeType{typ: TypeInt},
-					NativeType{typ: TypeBigInt},
+					NativeType{typ: TypeInt, proto: protoVer},
+					NativeType{typ: TypeBigInt, proto: protoVer},
 				},
 			},
 		},
 		ArgumentNames:     []string{"state"},
-		ReturnType:        NativeType{typ: TypeDouble},
+		ReturnType:        NativeType{typ: TypeDouble, proto: protoVer},
 		CalledOnNullInput: true,
 		Language:          "java",
 		Body:              finalStateBody,
@@ -2520,11 +2710,6 @@ func TestKeyspaceMetadata(t *testing.T) {
 	if aggregate.StateFunc.Name != "avgstate" {
 		t.Fatalf("expected state function %s, but got %s", "avgstate", aggregate.StateFunc.Name)
 	}
-
-	_, found = keyspaceMetadata.Views["basicview"]
-	if !found {
-		t.Fatal("failed to find the view in metadata")
-	}
 	_, found = keyspaceMetadata.UserTypes["basicview"]
 	if !found {
 		t.Fatal("failed to find the types in metadata")
@@ -2533,15 +2718,16 @@ func TestKeyspaceMetadata(t *testing.T) {
 	if flagCassVersion.Before(3, 0, 0) {
 		textType = TypeVarchar
 	}
+	protoVer := byte(session.cfg.ProtoVersion)
 	expectedType := UserTypeMetadata{
 		Keyspace:   "gocql_test",
 		Name:       "basicview",
 		FieldNames: []string{"birthday", "nationality", "weight", "height"},
 		FieldTypes: []TypeInfo{
-			NativeType{typ: TypeTimestamp},
-			NativeType{typ: textType},
-			NativeType{typ: textType},
-			NativeType{typ: textType},
+			NativeType{typ: TypeTimestamp, proto: protoVer},
+			NativeType{typ: textType, proto: protoVer},
+			NativeType{typ: textType, proto: protoVer},
+			NativeType{typ: textType, proto: protoVer},
 		},
 	}
 	if !reflect.DeepEqual(*keyspaceMetadata.UserTypes["basicview"], expectedType) {
@@ -2577,7 +2763,7 @@ func TestRoutingKey(t *testing.T) {
 		t.Fatalf("failed to create table with error '%v'", err)
 	}
 
-	routingKeyInfo, err := session.routingKeyInfo(context.Background(), "SELECT * FROM test_single_routing_key WHERE second_id=? AND first_id=?")
+	routingKeyInfo, err := session.routingKeyInfo(context.Background(), "SELECT * FROM test_single_routing_key WHERE second_id=? AND first_id=?", "")
 	if err != nil {
 		t.Fatalf("failed to get routing key info due to error: %v", err)
 	}
@@ -2601,7 +2787,7 @@ func TestRoutingKey(t *testing.T) {
 	}
 
 	// verify the cache is working
-	routingKeyInfo, err = session.routingKeyInfo(context.Background(), "SELECT * FROM test_single_routing_key WHERE second_id=? AND first_id=?")
+	routingKeyInfo, err = session.routingKeyInfo(context.Background(), "SELECT * FROM test_single_routing_key WHERE second_id=? AND first_id=?", "")
 	if err != nil {
 		t.Fatalf("failed to get routing key info due to error: %v", err)
 	}
@@ -2635,7 +2821,7 @@ func TestRoutingKey(t *testing.T) {
 		t.Errorf("Expected routing key %v but was %v", expectedRoutingKey, routingKey)
 	}
 
-	routingKeyInfo, err = session.routingKeyInfo(context.Background(), "SELECT * FROM test_composite_routing_key WHERE second_id=? AND first_id=?")
+	routingKeyInfo, err = session.routingKeyInfo(context.Background(), "SELECT * FROM test_composite_routing_key WHERE second_id=? AND first_id=?", "")
 	if err != nil {
 		t.Fatalf("failed to get routing key info due to error: %v", err)
 	}
@@ -2913,7 +3099,7 @@ func TestDiscoverViaProxy(t *testing.T) {
 	// This (complicated) test tests that when the driver is given an initial host
 	// that is infact a proxy it discovers the rest of the ring behind the proxy
 	// and does not store the proxies address as a host in its connection pool.
-	// See https://github.com/gocql/gocql/issues/481
+	// See https://github.com/apache/cassandra-gocql-driver/issues/481
 	clusterHosts := getClusterHosts()
 	proxy, err := net.Listen("tcp", "localhost:0")
 	if err != nil {
@@ -3158,6 +3344,10 @@ func TestCreateSession_DontSwallowError(t *testing.T) {
 func TestControl_DiscoverProtocol(t *testing.T) {
 	cluster := createCluster()
 	cluster.ProtoVersion = 0
+	// Forcing to run this test without any compression.
+	// If compressor is presented, then CI will fail when snappy compression is enabled, since
+	// protocol v5 doesn't support it.
+	cluster.Compressor = nil
 
 	session, err := cluster.CreateSession()
 	if err != nil {
@@ -3212,12 +3402,12 @@ func TestUnsetColBatch(t *testing.T) {
 		t.Fatalf("failed to create table with error '%v'", err)
 	}
 
-	b := session.NewBatch(LoggedBatch)
+	b := session.Batch(LoggedBatch)
 	b.Query("INSERT INTO gocql_test.batchUnsetInsert(id, my_int, my_text) VALUES (?,?,?)", 1, 1, UnsetValue)
 	b.Query("INSERT INTO gocql_test.batchUnsetInsert(id, my_int, my_text) VALUES (?,?,?)", 1, UnsetValue, "")
 	b.Query("INSERT INTO gocql_test.batchUnsetInsert(id, my_int, my_text) VALUES (?,?,?)", 2, 2, UnsetValue)
 
-	if err := session.ExecuteBatch(b); err != nil {
+	if err := b.Exec(); err != nil {
 		t.Fatalf("query failed. %v", err)
 	} else {
 		if b.Attempts() < 1 {
@@ -3229,7 +3419,6 @@ func TestUnsetColBatch(t *testing.T) {
 	}
 	var id, mInt, count int
 	var mText string
-
 	if err := session.Query("SELECT count(*) FROM gocql_test.batchUnsetInsert;").Scan(&count); err != nil {
 		t.Fatalf("Failed to select with err: %v", err)
 	} else if count != 2 {
@@ -3263,4 +3452,508 @@ func TestQuery_NamedValues(t *testing.T) {
 	if err := session.Query("SELECT VALUE from gocql_test.named_query WHERE id = :id", NamedValue("id", 1)).Scan(&value); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// This test ensures that queries are sent to the specified host only
+func TestQuery_SetHostID(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	hosts := session.GetHosts()
+
+	const iterations = 5
+	for _, expectedHost := range hosts {
+		for i := 0; i < iterations; i++ {
+			var actualHostID string
+			err := session.Query("SELECT host_id FROM system.local").
+				SetHostID(expectedHost.HostID()).
+				Scan(&actualHostID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if expectedHost.HostID() != actualHostID {
+				t.Fatalf("Expected query to be executed on host %s, but it was executed on %s",
+					expectedHost.HostID(),
+					actualHostID,
+				)
+			}
+		}
+	}
+
+	// ensuring properly handled invalid host id
+	err := session.Query("SELECT host_id FROM system.local").
+		SetHostID("[invalid]").
+		Exec()
+	if !errors.Is(err, ErrNoConnections) {
+		t.Fatalf("Expected error to be: %v, but got %v", ErrNoConnections, err)
+	}
+
+	// ensuring that the driver properly handles the case
+	// when specified host for the query is down
+	host := hosts[0]
+	pool, _ := session.pool.getPoolByHostID(host.HostID())
+	// simulating specified host is down
+	pool.host.setState(NodeDown)
+	err = session.Query("SELECT host_id FROM system.local").
+		SetHostID(host.HostID()).
+		Exec()
+	if !errors.Is(err, ErrNoConnections) {
+		t.Fatalf("Expected error to be: %v, but got %v", ErrNoConnections, err)
+	}
+}
+
+func TestQuery_WithNowInSeconds(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	if session.cfg.ProtoVersion < protoVersion5 {
+		t.Skip("Query now in seconds are only available on protocol >= 5")
+	}
+
+	if err := createTable(session, `CREATE TABLE IF NOT EXISTS query_now_in_seconds (id int primary key, val text)`); err != nil {
+		t.Fatal(err)
+	}
+
+	err := session.Query("INSERT INTO query_now_in_seconds (id, val) VALUES (?, ?) USING TTL 20", 1, "val").
+		WithNowInSeconds(int(0)).
+		Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var remainingTTL int
+	err = session.Query(`SELECT TTL(val) FROM query_now_in_seconds WHERE id = ?`, 1).
+		WithNowInSeconds(10).
+		Scan(&remainingTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	require.Equal(t, remainingTTL, 10)
+}
+
+func TestQuery_SetKeyspace(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	if session.cfg.ProtoVersion < protoVersion5 {
+		t.Skip("keyspace for QUERY message is not supported in protocol < 5")
+	}
+
+	const keyspaceStmt = `
+		CREATE KEYSPACE IF NOT EXISTS gocql_query_keyspace_override_test 
+		WITH replication = {
+			'class': 'SimpleStrategy', 
+			'replication_factor': '1'
+		};
+`
+
+	err := session.Query(keyspaceStmt).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = createTable(session, "CREATE TABLE IF NOT EXISTS gocql_query_keyspace_override_test.query_keyspace(id int, value text, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expectedID := 1
+	expectedText := "text"
+
+	// Testing PREPARE message
+	err = session.Query("INSERT INTO gocql_query_keyspace_override_test.query_keyspace (id, value) VALUES (?, ?)", expectedID, expectedText).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var (
+		id   int
+		text string
+	)
+
+	q := session.Query("SELECT * FROM gocql_query_keyspace_override_test.query_keyspace").
+		SetKeyspace("gocql_query_keyspace_override_test")
+	err = q.Scan(&id, &text)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	require.Equal(t, expectedID, id)
+	require.Equal(t, expectedText, text)
+
+	// Testing QUERY message
+	id = 0
+	text = ""
+
+	q = session.Query("SELECT * FROM gocql_query_keyspace_override_test.query_keyspace").
+		SetKeyspace("gocql_query_keyspace_override_test")
+	q.skipPrepare = true
+	err = q.Scan(&id, &text)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	require.Equal(t, expectedID, id)
+	require.Equal(t, expectedText, text)
+}
+
+// TestLargeSizeQuery runs a query bigger than the max allowed size of the payload of a frame,
+// so it should be sent as 2 different frames where each contains a self-contained bit set to zero.
+func TestLargeSizeQuery(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	if err := createTable(session, "CREATE TABLE IF NOT EXISTS gocql_test.large_size_query(id int, text_col text, PRIMARY KEY (id))"); err != nil {
+		t.Fatal(err)
+	}
+
+	longString := strings.Repeat("a", 500_000)
+
+	err := session.Query("INSERT INTO gocql_test.large_size_query (id, text_col) VALUES (?, ?)", "1", longString).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result string
+	err = session.Query("SELECT text_col FROM gocql_test.large_size_query").Scan(&result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	require.Equal(t, longString, result)
+}
+
+// TestQueryCompressionNotWorthIt runs a query that is not likely to be compressed efficiently
+// (uncompressed payload size > compressed payload size).
+// So, it should send a Compressed Frame where:
+//  1. Compressed length is set to the length of the uncompressed payload;
+//  2. Uncompressed length is set to zero;
+//  3. Payload is the uncompressed payload.
+func TestQueryCompressionNotWorthIt(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	if err := createTable(session, "CREATE TABLE IF NOT EXISTS gocql_test.compression_now_worth_it(id int, text_col text, PRIMARY KEY (id))"); err != nil {
+		t.Fatal(err)
+	}
+
+	str := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890!@#$%^&*()_+"
+	err := session.Query("INSERT INTO gocql_test.large_size_query (id, text_col) VALUES (?, ?)", "1", str).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var result string
+	err = session.Query("SELECT text_col FROM gocql_test.large_size_query").Scan(&result)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	require.Equal(t, str, result)
+}
+
+// This test ensures that the whole Metadata_changed flow
+// is handled properly.
+//
+// To trigger C* to return Metadata_changed we should do:
+//  1. Create a table
+//  2. Prepare stmt which uses the created table
+//  3. Change the table schema in order to affect prepared stmt (e.g. add a column)
+//  4. Execute prepared stmt. As a result C* should return RESULT/ROWS response with
+//     Metadata_changed flag, new metadata id and updated metadata resultset.
+//
+// The driver should handle this by updating its prepared statement inside the cache
+// when it receives RESULT/ROWS with Metadata_changed flag
+func TestPrepareExecuteMetadataChangedFlag(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	if session.cfg.ProtoVersion < protoVersion5 {
+		t.Skip("Metadata_changed mechanism is only available in proto > 4")
+	}
+
+	if err := createTable(session, "CREATE TABLE IF NOT EXISTS gocql_test.metadata_changed(id int, PRIMARY KEY (id))"); err != nil {
+		t.Fatal(err)
+	}
+
+	type record struct {
+		id     int
+		newCol int
+	}
+
+	firstRecord := record{
+		id: 1,
+	}
+	err := session.Query("INSERT INTO gocql_test.metadata_changed (id) VALUES (?)", firstRecord.id).Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// We have to specify conn for all queries to ensure that
+	// all queries are running on the same node
+	conn := session.getConn()
+
+	const selectStmt = "SELECT * FROM gocql_test.metadata_changed"
+	queryBeforeTableAltering := session.Query(selectStmt)
+	queryBeforeTableAltering.conn = conn
+	row := make(map[string]interface{})
+	err = queryBeforeTableAltering.MapScan(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	require.Len(t, row, 1, "Expected to retrieve a single column")
+	require.Equal(t, 1, row["id"])
+
+	stmtCacheKey := session.stmtsLRU.keyFor(conn.host.HostID(), conn.currentKeyspace, queryBeforeTableAltering.stmt)
+	inflight, _ := session.stmtsLRU.get(stmtCacheKey)
+	preparedStatementBeforeTableAltering := inflight.preparedStatment
+
+	// Changing table schema in order to cause C* to return RESULT/ROWS Metadata_changed
+	alteringTableQuery := session.Query("ALTER TABLE gocql_test.metadata_changed ADD new_col int")
+	alteringTableQuery.conn = conn
+	err = alteringTableQuery.Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	secondRecord := record{
+		id:     2,
+		newCol: 10,
+	}
+	err = session.Query("INSERT INTO gocql_test.metadata_changed (id, new_col) VALUES (?, ?)", secondRecord.id, secondRecord.newCol).
+		Exec()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Handles result from iter and ensures integrity of the result,
+	// closes iter and handles error
+	handleRows := func(iter *Iter) {
+		t.Helper()
+
+		var scannedID int
+		var scannedNewCol *int // to perform null values
+
+		// when the driver handling null values during unmarshalling
+		// it sets to dest type its zero value, which is (*int)(nil) for this case
+		var nilIntPtr *int
+
+		// Scanning first row
+		if iter.Scan(&scannedID, &scannedNewCol) {
+			require.Equal(t, firstRecord.id, scannedID)
+			require.Equal(t, nilIntPtr, scannedNewCol)
+		}
+
+		// Scanning second row
+		if iter.Scan(&scannedID, &scannedNewCol) {
+			require.Equal(t, secondRecord.id, scannedID)
+			require.Equal(t, &secondRecord.newCol, scannedNewCol)
+		}
+
+		err := iter.Close()
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				t.Fatal("It is likely failed due deadlock")
+			}
+			t.Fatal(err)
+		}
+	}
+
+	// Expecting C* will return RESULT/ROWS Metadata_changed
+	// and it will be properly handled
+	queryAfterTableAltering := session.Query(selectStmt)
+	queryAfterTableAltering.conn = conn
+	iter := queryAfterTableAltering.Iter()
+	handleRows(iter)
+
+	// Ensuring if cache contains updated prepared statement
+	inflight, _ = session.stmtsLRU.get(stmtCacheKey)
+	preparedStatementAfterTableAltering := inflight.preparedStatment
+	require.NotEqual(t, preparedStatementBeforeTableAltering.resultMetadataID, preparedStatementAfterTableAltering.resultMetadataID)
+	require.NotEqual(t, preparedStatementBeforeTableAltering.response, preparedStatementAfterTableAltering.response)
+
+	// FORCE SEND OLD RESULT METADATA ID (https://issues.apache.org/jira/browse/CASSANDRA-20028)
+	closedCh := make(chan struct{})
+	close(closedCh)
+	session.stmtsLRU.add(stmtCacheKey, &inflightPrepare{
+		done:             closedCh,
+		err:              nil,
+		preparedStatment: preparedStatementBeforeTableAltering,
+	})
+
+	// Running query with timeout to ensure there is no deadlocks.
+	// However, it doesn't 100% proves that there is a deadlock...
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+	defer cancel()
+
+	queryAfterTableAltering2 := session.Query(selectStmt).WithContext(ctx)
+	queryAfterTableAltering2.conn = conn
+	iter = queryAfterTableAltering2.Iter()
+	handleRows(iter)
+	err = iter.Close()
+
+	inflight, _ = session.stmtsLRU.get(stmtCacheKey)
+	preparedStatementAfterTableAltering2 := inflight.preparedStatment
+	require.NotEqual(t, preparedStatementBeforeTableAltering.resultMetadataID, preparedStatementAfterTableAltering2.resultMetadataID)
+	require.NotEqual(t, preparedStatementBeforeTableAltering.response, preparedStatementAfterTableAltering2.response)
+
+	require.Equal(t, preparedStatementAfterTableAltering.resultMetadataID, preparedStatementAfterTableAltering2.resultMetadataID)
+	require.NotEqual(t, preparedStatementAfterTableAltering.response, preparedStatementAfterTableAltering2.response) // METADATA_CHANGED flag
+	require.True(t, preparedStatementAfterTableAltering2.response.flags&flagMetaDataChanged != 0)
+
+	// Executing prepared stmt and expecting that C* won't return
+	// Metadata_changed because the table is not being changed.
+	queryAfterTableAltering3 := session.Query(selectStmt).WithContext(ctx)
+	queryAfterTableAltering3.conn = conn
+	iter = queryAfterTableAltering2.Iter()
+	handleRows(iter)
+
+	// Ensuring metadata of prepared stmt is not changed
+	inflight, _ = session.stmtsLRU.get(stmtCacheKey)
+	preparedStatementAfterTableAltering3 := inflight.preparedStatment
+	require.Equal(t, preparedStatementAfterTableAltering2.resultMetadataID, preparedStatementAfterTableAltering3.resultMetadataID)
+	require.Equal(t, preparedStatementAfterTableAltering2.response, preparedStatementAfterTableAltering3.response)
+}
+
+func TestStmtCacheUsesOverriddenKeyspace(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	if session.cfg.ProtoVersion < protoVersion5 {
+		t.Skip("This tests only runs on proto > 4 due SetKeyspace availability")
+	}
+
+	const createKeyspaceStmt = `CREATE KEYSPACE IF NOT EXISTS %s
+	WITH replication = {
+		'class' : 'SimpleStrategy',
+			'replication_factor' : 1
+	}`
+
+	err := createTable(session, fmt.Sprintf(createKeyspaceStmt, "gocql_test_stmt_cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = createTable(session, "CREATE TABLE IF NOT EXISTS gocql_test.stmt_cache_uses_overridden_ks(id int, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = createTable(session, "CREATE TABLE IF NOT EXISTS gocql_test_stmt_cache.stmt_cache_uses_overridden_ks(id int, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const insertQuery = "INSERT INTO stmt_cache_uses_overridden_ks (id) VALUES (?)"
+
+	// Inserting data via Batch to ensure that batches
+	// properly accounts for keyspace overriding
+	b1 := session.NewBatch(LoggedBatch)
+	b1.Query(insertQuery, 1)
+	err = session.ExecuteBatch(b1)
+	require.NoError(t, err)
+
+	b2 := session.NewBatch(LoggedBatch)
+	b2.SetKeyspace("gocql_test_stmt_cache")
+	b2.Query(insertQuery, 2)
+	err = session.ExecuteBatch(b2)
+	require.NoError(t, err)
+
+	var scannedID int
+
+	const selectStmt = "SELECT * FROM stmt_cache_uses_overridden_ks"
+
+	// By default in our test suite session uses gocql_test ks
+	err = session.Query(selectStmt).Scan(&scannedID)
+	require.NoError(t, err)
+	require.Equal(t, 1, scannedID)
+
+	scannedID = 0
+	err = session.Query(selectStmt).SetKeyspace("gocql_test_stmt_cache").Scan(&scannedID)
+	require.NoError(t, err)
+	require.Equal(t, 2, scannedID)
+
+	session.Query("DROP KEYSPACE IF EXISTS gocql_test_stmt_cache").Exec()
+}
+
+func TestRoutingKeyCacheUsesOverriddenKeyspace(t *testing.T) {
+	session := createSession(t)
+	defer session.Close()
+
+	if session.cfg.ProtoVersion < protoVersion5 {
+		t.Skip("This tests only runs on proto > 4 due SetKeyspace availability")
+	}
+
+	const createKeyspaceStmt = `CREATE KEYSPACE IF NOT EXISTS %s
+	WITH replication = {
+		'class' : 'SimpleStrategy',
+			'replication_factor' : 1
+	}`
+
+	err := createTable(session, fmt.Sprintf(createKeyspaceStmt, "gocql_test_routing_key_cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = createTable(session, "CREATE TABLE IF NOT EXISTS gocql_test.routing_key_cache_uses_overridden_ks(id int, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = createTable(session, "CREATE TABLE IF NOT EXISTS gocql_test_routing_key_cache.routing_key_cache_uses_overridden_ks(id int, PRIMARY KEY (id))")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	getRoutingKeyInfo := func(key string) *routingKeyInfo {
+		t.Helper()
+		session.routingKeyInfoCache.mu.Lock()
+		value, _ := session.routingKeyInfoCache.lru.Get(key)
+		session.routingKeyInfoCache.mu.Unlock()
+
+		inflight := value.(*inflightCachedEntry)
+		return inflight.value.(*routingKeyInfo)
+	}
+
+	const insertQuery = "INSERT INTO routing_key_cache_uses_overridden_ks (id) VALUES (?)"
+
+	// Running batch in default ks gocql_test
+	b1 := session.NewBatch(LoggedBatch)
+	b1.Query(insertQuery, 1)
+	_, err = b1.GetRoutingKey()
+	require.NoError(t, err)
+
+	// Ensuring that the cache contains the query with default ks
+	routingKeyInfo1 := getRoutingKeyInfo("gocql_test" + b1.Entries[0].Stmt)
+	require.Equal(t, "gocql_test", routingKeyInfo1.keyspace)
+
+	// Running batch in gocql_test_routing_key_cache ks
+	b2 := session.NewBatch(LoggedBatch)
+	b2.SetKeyspace("gocql_test_routing_key_cache")
+	b2.Query(insertQuery, 2)
+	_, err = b2.GetRoutingKey()
+	require.NoError(t, err)
+
+	// Ensuring that the cache contains the query with gocql_test_routing_key_cache ks
+	routingKeyInfo2 := getRoutingKeyInfo("gocql_test_routing_key_cache" + b2.Entries[0].Stmt)
+	require.Equal(t, "gocql_test_routing_key_cache", routingKeyInfo2.keyspace)
+
+	const selectStmt = "SELECT * FROM routing_key_cache_uses_overridden_ks WHERE id=?"
+
+	// Running query in default ks gocql_test
+	q1 := session.Query(selectStmt, 1)
+	_, err = q1.GetRoutingKey()
+	require.NoError(t, err)
+	require.Equal(t, "gocql_test", q1.routingInfo.keyspace)
+
+	// Running query in gocql_test_routing_key_cache ks
+	q2 := session.Query(selectStmt, 1)
+	_, err = q2.SetKeyspace("gocql_test_routing_key_cache").GetRoutingKey()
+	require.NoError(t, err)
+	require.Equal(t, "gocql_test_routing_key_cache", q2.routingInfo.keyspace)
+
+	session.Query("DROP KEYSPACE IF EXISTS gocql_test_routing_key_cache").Exec()
 }

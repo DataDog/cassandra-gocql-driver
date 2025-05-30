@@ -1,8 +1,29 @@
-// Copyright (c) 2012 The gocql Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
 //go:build all || unit
 // +build all unit
+
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2012, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
 
 package gocql
 
@@ -12,6 +33,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +47,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/gocql/gocql/internal/streams"
 )
 
@@ -34,18 +58,21 @@ const (
 
 func TestApprove(t *testing.T) {
 	tests := map[bool]bool{
-		approve("org.apache.cassandra.auth.PasswordAuthenticator", []string{}):                                          true,
-		approve("com.instaclustr.cassandra.auth.SharedSecretAuthenticator", []string{}):                                 true,
-		approve("com.datastax.bdp.cassandra.auth.DseAuthenticator", []string{}):                                         true,
-		approve("io.aiven.cassandra.auth.AivenAuthenticator", []string{}):                                               true,
-		approve("com.amazon.helenus.auth.HelenusAuthenticator", []string{}):                                             true,
-		approve("com.ericsson.bss.cassandra.ecaudit.auth.AuditAuthenticator", []string{}):                               true,
-		approve("com.scylladb.auth.SaslauthdAuthenticator", []string{}):                                                 true,
-		approve("com.scylladb.auth.TransitionalAuthenticator", []string{}):                                              true,
-		approve("com.instaclustr.cassandra.auth.InstaclustrPasswordAuthenticator", []string{}):                          true,
-		approve("com.apache.cassandra.auth.FakeAuthenticator", []string{}):                                              false,
-		approve("com.apache.cassandra.auth.FakeAuthenticator", nil):                                                     false,
-		approve("com.apache.cassandra.auth.FakeAuthenticator", []string{"com.apache.cassandra.auth.FakeAuthenticator"}): true,
+		approve("org.apache.cassandra.auth.PasswordAuthenticator", []string{}):                                             true,
+		approve("org.apache.cassandra.auth.MutualTlsWithPasswordFallbackAuthenticator", []string{}):                        true,
+		approve("org.apache.cassandra.auth.MutualTlsAuthenticator", []string{}):                                            true,
+		approve("com.instaclustr.cassandra.auth.SharedSecretAuthenticator", []string{}):                                    true,
+		approve("com.datastax.bdp.cassandra.auth.DseAuthenticator", []string{}):                                            true,
+		approve("io.aiven.cassandra.auth.AivenAuthenticator", []string{}):                                                  true,
+		approve("com.amazon.helenus.auth.HelenusAuthenticator", []string{}):                                                true,
+		approve("com.ericsson.bss.cassandra.ecaudit.auth.AuditAuthenticator", []string{}):                                  true,
+		approve("com.scylladb.auth.SaslauthdAuthenticator", []string{}):                                                    true,
+		approve("com.scylladb.auth.TransitionalAuthenticator", []string{}):                                                 true,
+		approve("com.instaclustr.cassandra.auth.InstaclustrPasswordAuthenticator", []string{}):                             true,
+		approve("com.apache.cassandra.auth.FakeAuthenticator", []string{}):                                                 true,
+		approve("com.apache.cassandra.auth.FakeAuthenticator", nil):                                                        true,
+		approve("com.apache.cassandra.auth.FakeAuthenticator", []string{"com.apache.cassandra.auth.FakeAuthenticator"}):    true,
+		approve("com.apache.cassandra.auth.FakeAuthenticator", []string{"com.apache.cassandra.auth.NotFakeAuthenticator"}): false,
 	}
 	for k, v := range tests {
 		if k != v {
@@ -411,7 +438,7 @@ func TestQueryMultinodeWithMetrics(t *testing.T) {
 	// 1 retry per host
 	rt := &SimpleRetryPolicy{NumRetries: 3}
 	observer := &testQueryObserver{metrics: make(map[string]*hostMetrics), verbose: false, logger: log}
-	qry := db.Query("kill").RetryPolicy(rt).Observer(observer)
+	qry := db.Query("kill").RetryPolicy(rt).Observer(observer).Idempotent(true)
 	if err := qry.Exec(); err == nil {
 		t.Fatalf("expected error")
 	}
@@ -686,12 +713,14 @@ func TestStream0(t *testing.T) {
 	}
 
 	conn := &Conn{
-		r:       bufio.NewReader(&buf),
+		r: &connReader{
+			r: bufio.NewReader(&buf),
+		},
 		streams: streams.New(protoVersion4),
 		logger:  &defaultLogger{},
 	}
 
-	err := conn.recv(context.Background())
+	err := conn.recv(context.Background(), false)
 	if err == nil {
 		t.Fatal("expected to get an error on stream 0")
 	} else if !strings.HasPrefix(err.Error(), expErr) {
@@ -925,6 +954,28 @@ func TestWriteCoalescing_WriteAfterClose(t *testing.T) {
 		t.Fatal("expected to get error for write after closing")
 	} else if err != io.EOF {
 		t.Fatalf("expected to get EOF got %v", err)
+	}
+}
+
+func TestSkipMetadata(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	srv := NewTestServer(t, protoVersion4, ctx)
+	defer srv.Stop()
+
+	db, err := newTestSession(protoVersion4, srv.Address)
+	if err != nil {
+		t.Fatalf("NewCluster: %v", err)
+	}
+	defer db.Close()
+
+	if err := db.Query("select nometadata").Exec(); err != nil {
+		t.Fatalf("expected no error got: %v", err)
+	}
+
+	if err := db.Query("select metadata").Exec(); err != nil {
+		t.Fatalf("expected no error got: %v", err)
 	}
 }
 
@@ -1240,6 +1291,99 @@ func (srv *TestServer) process(conn net.Conn, reqFrame *framer) {
 	case opError:
 		respFrame.writeHeader(0, opError, head.stream)
 		respFrame.buf = append(respFrame.buf, reqFrame.buf...)
+	case opPrepare:
+		query := reqFrame.readLongString()
+		name := strings.TrimPrefix(query, "select ")
+		if n := strings.Index(name, " "); n > 0 {
+			name = name[:n]
+		}
+		switch strings.ToLower(name) {
+		case "nometadata":
+			respFrame.writeHeader(0, opResult, head.stream)
+			respFrame.writeInt(resultKindPrepared)
+			// <id>
+			respFrame.writeShortBytes(binary.BigEndian.AppendUint64(nil, 1))
+			// <metadata>
+			respFrame.writeInt(0) // <flags>
+			respFrame.writeInt(0) // <columns_count>
+			if srv.protocol >= protoVersion4 {
+				respFrame.writeInt(0) // <pk_count>
+			}
+			// <result_metadata>
+			respFrame.writeInt(int32(flagNoMetaData)) // <flags>
+			respFrame.writeInt(0)
+		case "metadata":
+			respFrame.writeHeader(0, opResult, head.stream)
+			respFrame.writeInt(resultKindPrepared)
+			// <id>
+			respFrame.writeShortBytes(binary.BigEndian.AppendUint64(nil, 2))
+			// <metadata>
+			respFrame.writeInt(0) // <flags>
+			respFrame.writeInt(0) // <columns_count>
+			if srv.protocol >= protoVersion4 {
+				respFrame.writeInt(0) // <pk_count>
+			}
+			// <result_metadata>
+			respFrame.writeInt(int32(flagGlobalTableSpec)) // <flags>
+			respFrame.writeInt(1)                          // <columns_count>
+			// <global_table_spec>
+			respFrame.writeString("keyspace")
+			respFrame.writeString("table")
+			// <col_spec_0>
+			respFrame.writeString("col0")             // <name>
+			respFrame.writeShort(uint16(TypeBoolean)) // <type>
+		default:
+			respFrame.writeHeader(0, opError, head.stream)
+			respFrame.writeInt(0)
+			respFrame.writeString("unsupported query: " + name)
+		}
+	case opExecute:
+		b := reqFrame.readShortBytes()
+		id := binary.BigEndian.Uint64(b)
+		// <query_parameters>
+		reqFrame.readConsistency() // <consistency>
+		var flags uint32
+		if srv.protocol > protoVersion4 {
+			ui := reqFrame.readInt()
+			flags = uint32(ui)
+		} else {
+			flags = uint32(reqFrame.readByte())
+		}
+		switch id {
+		case 1:
+			if flags&flagSkipMetaData != 0 {
+				respFrame.writeHeader(0, opError, head.stream)
+				respFrame.writeInt(0)
+				respFrame.writeString("skip metadata unexpected")
+			} else {
+				respFrame.writeHeader(0, opResult, head.stream)
+				respFrame.writeInt(resultKindRows)
+				// <metadata>
+				respFrame.writeInt(0) // <flags>
+				respFrame.writeInt(0) // <columns_count>
+				// <rows_count>
+				respFrame.writeInt(0)
+			}
+		case 2:
+			if flags&flagSkipMetaData != 0 {
+				respFrame.writeHeader(0, opResult, head.stream)
+				respFrame.writeInt(resultKindRows)
+				// <metadata>
+				respFrame.writeInt(0) // <flags>
+				respFrame.writeInt(0) // <columns_count>
+				// <rows_count>
+				respFrame.writeInt(0)
+			} else {
+				respFrame.writeHeader(0, opError, head.stream)
+				respFrame.writeInt(0)
+				respFrame.writeString("skip metadata expected")
+			}
+		default:
+			respFrame.writeHeader(0, opError, head.stream)
+			respFrame.writeInt(ErrCodeUnprepared)
+			respFrame.writeString("unprepared")
+			respFrame.writeShortBytes(binary.BigEndian.AppendUint64(nil, id))
+		}
 	default:
 		respFrame.writeHeader(0, opError, head.stream)
 		respFrame.writeInt(0)
@@ -1278,4 +1422,98 @@ func (srv *TestServer) readFrame(conn net.Conn) (*framer, error) {
 	}
 
 	return framer, nil
+}
+
+func TestConnProcessAllFramesInSingleSegment(t *testing.T) {
+	server, client, err := tcpConnPair()
+	require.NoError(t, err)
+
+	c := &Conn{
+		r: &connReader{
+			conn: server,
+			r:    bufio.NewReader(server),
+		},
+		calls:      make(map[int]*callReq),
+		version:    protoVersion5,
+		addr:       server.RemoteAddr().String(),
+		streams:    streams.New(protoVersion5),
+		isSchemaV2: true,
+		w: &deadlineContextWriter{
+			w:         server,
+			timeout:   time.Second * 10,
+			semaphore: make(chan struct{}, 1),
+			quit:      make(chan struct{}),
+		},
+		writeTimeout: time.Second * 10,
+	}
+
+	call1 := &callReq{
+		timeout:  make(chan struct{}),
+		streamID: 1,
+		resp:     make(chan callResp),
+	}
+
+	call2 := &callReq{
+		timeout:  make(chan struct{}),
+		streamID: 2,
+		resp:     make(chan callResp),
+	}
+
+	c.calls[1] = call1
+	c.calls[2] = call2
+
+	req := writeQueryFrame{
+		statement: "SELECT * FROM system.local",
+		params: queryParams{
+			consistency: Quorum,
+			keyspace:    "gocql_test",
+		},
+	}
+
+	framer1 := newFramer(nil, protoVersion5)
+	err = req.buildFrame(framer1, 1)
+	require.NoError(t, err)
+
+	framer2 := newFramer(nil, protoVersion5)
+	err = req.buildFrame(framer2, 2)
+	require.NoError(t, err)
+
+	go func() {
+		var buf []byte
+		buf = append(buf, framer1.buf...)
+		buf = append(buf, framer2.buf...)
+
+		uncompressedSegment, err := newUncompressedSegment(buf, true)
+		require.NoError(t, err)
+
+		_, err = client.Write(uncompressedSegment)
+		require.NoError(t, err)
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+	defer cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- c.recvSegment(ctx)
+	}()
+
+	go func() {
+		resp1 := <-call1.resp
+		close(call1.timeout)
+		// Skipping here the header of the frame because resp.framer contains already parsed header
+		// and resp.framer.buf contains frame body
+		require.Equal(t, framer1.buf[9:], resp1.framer.buf)
+
+		resp2 := <-call2.resp
+		close(call2.timeout)
+		require.Equal(t, framer2.buf[9:], resp2.framer.buf)
+	}()
+
+	select {
+	case <-ctx.Done():
+		t.Fatal("Timed out waiting for frames")
+	case err := <-errCh:
+		require.NoError(t, err)
+	}
 }

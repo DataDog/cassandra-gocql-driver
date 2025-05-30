@@ -2,6 +2,30 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
+
 package gocql
 
 import (
@@ -15,15 +39,13 @@ import (
 
 // schema metadata for a keyspace
 type KeyspaceMetadata struct {
-	Name            string
-	DurableWrites   bool
-	StrategyClass   string
-	StrategyOptions map[string]interface{}
-	Tables          map[string]*TableMetadata
-	Functions       map[string]*FunctionMetadata
-	Aggregates      map[string]*AggregateMetadata
-	// Deprecated: use the MaterializedViews field for views and UserTypes field for udts instead.
-	Views             map[string]*ViewMetadata
+	Name              string
+	DurableWrites     bool
+	StrategyClass     string
+	StrategyOptions   map[string]interface{}
+	Tables            map[string]*TableMetadata
+	Functions         map[string]*FunctionMetadata
+	Aggregates        map[string]*AggregateMetadata
 	MaterializedViews map[string]*MaterializedViewMetadata
 	UserTypes         map[string]*UserTypeMetadata
 }
@@ -85,19 +107,11 @@ type AggregateMetadata struct {
 	finalFunc string
 }
 
-// ViewMetadata holds the metadata for views.
-// Deprecated: this is kept for backwards compatibility issues. Use MaterializedViewMetadata.
-type ViewMetadata struct {
-	Keyspace   string
-	Name       string
-	FieldNames []string
-	FieldTypes []TypeInfo
-}
-
 // MaterializedViewMetadata holds the metadata for materialized views.
 type MaterializedViewMetadata struct {
 	Keyspace                string
 	Name                    string
+	AdditionalWritePolicy   string
 	BaseTableId             UUID
 	BaseTable               *TableMetadata
 	BloomFilterFpChance     float64
@@ -115,7 +129,8 @@ type MaterializedViewMetadata struct {
 	MaxIndexInterval        int
 	MemtableFlushPeriodInMs int
 	MinIndexInterval        int
-	ReadRepairChance        float64
+	ReadRepair              string  // Only present in Cassandra 4.0+
+	ReadRepairChance        float64 // Note: Cassandra 4.0 removed ReadRepairChance and added ReadRepair instead
 	SpeculativeRetry        string
 
 	baseTableName string
@@ -280,7 +295,7 @@ func (s *schemaDescriber) refreshSchema(keyspaceName string) error {
 	if err != nil {
 		return err
 	}
-	views, err := getViewsMetadata(s.session, keyspaceName)
+	userTypes, err := getUserTypeMetadata(s.session, keyspaceName)
 	if err != nil {
 		return err
 	}
@@ -290,7 +305,7 @@ func (s *schemaDescriber) refreshSchema(keyspaceName string) error {
 	}
 
 	// organize the schema data
-	compileMetadata(s.session.cfg.ProtoVersion, keyspace, tables, columns, functions, aggregates, views,
+	compileMetadata(s.session.cfg.ProtoVersion, keyspace, tables, columns, functions, aggregates, userTypes,
 		materializedViews, s.session.logger)
 
 	// update the cache
@@ -311,7 +326,7 @@ func compileMetadata(
 	columns []ColumnMetadata,
 	functions []FunctionMetadata,
 	aggregates []AggregateMetadata,
-	views []ViewMetadata,
+	uTypes []UserTypeMetadata,
 	materializedViews []MaterializedViewMetadata,
 	logger StdLogger,
 ) {
@@ -331,22 +346,9 @@ func compileMetadata(
 		aggregates[i].StateFunc = *keyspace.Functions[aggregates[i].stateFunc]
 		keyspace.Aggregates[aggregates[i].Name] = &aggregates[i]
 	}
-	keyspace.Views = make(map[string]*ViewMetadata, len(views))
-	for i := range views {
-		keyspace.Views[views[i].Name] = &views[i]
-	}
-	// Views currently holds the types and hasn't been deleted for backward compatibility issues.
-	// That's why it's ok to copy Views into Types in this case. For the real Views use MaterializedViews.
-	types := make([]UserTypeMetadata, len(views))
-	for i := range views {
-		types[i].Keyspace = views[i].Keyspace
-		types[i].Name = views[i].Name
-		types[i].FieldNames = views[i].FieldNames
-		types[i].FieldTypes = views[i].FieldTypes
-	}
-	keyspace.UserTypes = make(map[string]*UserTypeMetadata, len(views))
-	for i := range types {
-		keyspace.UserTypes[types[i].Name] = &types[i]
+	keyspace.UserTypes = make(map[string]*UserTypeMetadata, len(uTypes))
+	for i := range uTypes {
+		keyspace.UserTypes[uTypes[i].Name] = &uTypes[i]
 	}
 	keyspace.MaterializedViews = make(map[string]*MaterializedViewMetadata, len(materializedViews))
 	for i, _ := range materializedViews {
@@ -359,13 +361,13 @@ func compileMetadata(
 		col := &columns[i]
 		// decode the validator for TypeInfo and order
 		if col.ClusteringOrder != "" { // Cassandra 3.x+
-			col.Type = getCassandraType(col.Validator, logger)
+			col.Type = getCassandraType(col.Validator, byte(protoVersion), logger)
 			col.Order = ASC
 			if col.ClusteringOrder == "desc" {
 				col.Order = DESC
 			}
 		} else {
-			validatorParsed := parseType(col.Validator, logger)
+			validatorParsed := parseType(col.Validator, byte(protoVersion), logger)
 			col.Type = validatorParsed.types[0]
 			col.Order = ASC
 			if validatorParsed.reversed[0] {
@@ -387,9 +389,9 @@ func compileMetadata(
 	}
 
 	if protoVersion == protoVersion1 {
-		compileV1Metadata(tables, logger)
+		compileV1Metadata(tables, protoVersion, logger)
 	} else {
-		compileV2Metadata(tables, logger)
+		compileV2Metadata(tables, protoVersion, logger)
 	}
 }
 
@@ -398,14 +400,14 @@ func compileMetadata(
 // column metadata as V2+ (because V1 doesn't support the "type" column in the
 // system.schema_columns table) so determining PartitionKey and ClusterColumns
 // is more complex.
-func compileV1Metadata(tables []TableMetadata, logger StdLogger) {
+func compileV1Metadata(tables []TableMetadata, protoVer int, logger StdLogger) {
 	for i := range tables {
 		table := &tables[i]
 
 		// decode the key validator
-		keyValidatorParsed := parseType(table.KeyValidator, logger)
+		keyValidatorParsed := parseType(table.KeyValidator, byte(protoVer), logger)
 		// decode the comparator
-		comparatorParsed := parseType(table.Comparator, logger)
+		comparatorParsed := parseType(table.Comparator, byte(protoVer), logger)
 
 		// the partition key length is the same as the number of types in the
 		// key validator
@@ -491,7 +493,7 @@ func compileV1Metadata(tables []TableMetadata, logger StdLogger) {
 				alias = table.ValueAlias
 			}
 			// decode the default validator
-			defaultValidatorParsed := parseType(table.DefaultValidator, logger)
+			defaultValidatorParsed := parseType(table.DefaultValidator, byte(protoVer), logger)
 			column := &ColumnMetadata{
 				Keyspace: table.Keyspace,
 				Table:    table.Name,
@@ -505,7 +507,7 @@ func compileV1Metadata(tables []TableMetadata, logger StdLogger) {
 }
 
 // The simpler compile case for V2+ protocol
-func compileV2Metadata(tables []TableMetadata, logger StdLogger) {
+func compileV2Metadata(tables []TableMetadata, protoVer int, logger StdLogger) {
 	for i := range tables {
 		table := &tables[i]
 
@@ -513,7 +515,7 @@ func compileV2Metadata(tables []TableMetadata, logger StdLogger) {
 		table.ClusteringColumns = make([]*ColumnMetadata, clusteringColumnCount)
 
 		if table.KeyValidator != "" {
-			keyValidatorParsed := parseType(table.KeyValidator, logger)
+			keyValidatorParsed := parseType(table.KeyValidator, byte(protoVer), logger)
 			table.PartitionKey = make([]*ColumnMetadata, len(keyValidatorParsed.types))
 		} else { // Cassandra 3.x+
 			partitionKeyCount := componentColumnCountOfType(table.Columns, ColumnPartitionKey)
@@ -923,14 +925,14 @@ func getColumnMetadata(session *Session, keyspaceName string) ([]ColumnMetadata,
 	return columns, nil
 }
 
-func getTypeInfo(t string, logger StdLogger) TypeInfo {
+func getTypeInfo(t string, protoVer byte, logger StdLogger) TypeInfo {
 	if strings.HasPrefix(t, apacheCassandraTypePrefix) {
-		t = apacheToCassandraType(t)
+		return getCassandraLongType(t, protoVer, logger)
 	}
-	return getCassandraType(t, logger)
+	return getCassandraType(t, protoVer, logger)
 }
 
-func getViewsMetadata(session *Session, keyspaceName string) ([]ViewMetadata, error) {
+func getUserTypeMetadata(session *Session, keyspaceName string) ([]UserTypeMetadata, error) {
 	if session.cfg.ProtoVersion == protoVersion1 {
 		return nil, nil
 	}
@@ -948,31 +950,210 @@ func getViewsMetadata(session *Session, keyspaceName string) ([]ViewMetadata, er
 		FROM %s
 		WHERE keyspace_name = ?`, tableName)
 
-	var views []ViewMetadata
+	var uTypes []UserTypeMetadata
 
 	rows := session.control.query(stmt, keyspaceName).Scanner()
 	for rows.Next() {
-		view := ViewMetadata{Keyspace: keyspaceName}
+		uType := UserTypeMetadata{Keyspace: keyspaceName}
 		var argumentTypes []string
-		err := rows.Scan(&view.Name,
-			&view.FieldNames,
+		err := rows.Scan(&uType.Name,
+			&uType.FieldNames,
 			&argumentTypes,
 		)
 		if err != nil {
 			return nil, err
 		}
-		view.FieldTypes = make([]TypeInfo, len(argumentTypes))
+		uType.FieldTypes = make([]TypeInfo, len(argumentTypes))
 		for i, argumentType := range argumentTypes {
-			view.FieldTypes[i] = getTypeInfo(argumentType, session.logger)
+			uType.FieldTypes[i] = getTypeInfo(argumentType, byte(session.cfg.ProtoVersion), session.logger)
 		}
-		views = append(views, view)
+		uTypes = append(uTypes, uType)
 	}
 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	return views, nil
+	return uTypes, nil
+}
+
+func bytesMapToStringsMap(byteData map[string][]byte) map[string]string {
+	extensions := make(map[string]string, len(byteData))
+	for key, rowByte := range byteData {
+		extensions[key] = string(rowByte)
+	}
+
+	return extensions
+}
+
+func materializedViewMetadataFromMap(currentObject map[string]interface{}, materializedView *MaterializedViewMetadata) error {
+	const errorMessage = "gocql.materializedViewMetadataFromMap failed to read column %s"
+	var ok bool
+	for key, value := range currentObject {
+		switch key {
+		case "keyspace_name":
+			materializedView.Keyspace, ok = value.(string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "view_name":
+			materializedView.Name, ok = value.(string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "additional_write_policy":
+			materializedView.AdditionalWritePolicy, ok = value.(string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "base_table_id":
+			materializedView.BaseTableId, ok = value.(UUID)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "base_table_name":
+			materializedView.baseTableName, ok = value.(string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "bloom_filter_fp_chance":
+			materializedView.BloomFilterFpChance, ok = value.(float64)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "caching":
+			materializedView.Caching, ok = value.(map[string]string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "comment":
+			materializedView.Comment, ok = value.(string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "compaction":
+			materializedView.Compaction, ok = value.(map[string]string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "compression":
+			materializedView.Compression, ok = value.(map[string]string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "crc_check_chance":
+			materializedView.CrcCheckChance, ok = value.(float64)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "dclocal_read_repair_chance":
+			materializedView.DcLocalReadRepairChance, ok = value.(float64)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "default_time_to_live":
+			materializedView.DefaultTimeToLive, ok = value.(int)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "extensions":
+			byteData, ok := value.(map[string][]byte)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+			materializedView.Extensions = bytesMapToStringsMap(byteData)
+
+		case "gc_grace_seconds":
+			materializedView.GcGraceSeconds, ok = value.(int)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "id":
+			materializedView.Id, ok = value.(UUID)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "include_all_columns":
+			materializedView.IncludeAllColumns, ok = value.(bool)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "max_index_interval":
+			materializedView.MaxIndexInterval, ok = value.(int)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "memtable_flush_period_in_ms":
+			materializedView.MemtableFlushPeriodInMs, ok = value.(int)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "min_index_interval":
+			materializedView.MinIndexInterval, ok = value.(int)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "read_repair":
+			materializedView.ReadRepair, ok = value.(string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "read_repair_chance":
+			materializedView.ReadRepairChance, ok = value.(float64)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		case "speculative_retry":
+			materializedView.SpeculativeRetry, ok = value.(string)
+			if !ok {
+				return fmt.Errorf(errorMessage, key)
+			}
+
+		}
+	}
+	return nil
+}
+
+func parseSystemSchemaViews(iter *Iter) ([]MaterializedViewMetadata, error) {
+	var materializedViews []MaterializedViewMetadata
+	s, err := iter.SliceMap()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, row := range s {
+		var materializedView MaterializedViewMetadata
+		err = materializedViewMetadataFromMap(row, &materializedView)
+		if err != nil {
+			return nil, err
+		}
+
+		materializedViews = append(materializedViews, materializedView)
+	}
+
+	return materializedViews, nil
 }
 
 func getMaterializedViewsMetadata(session *Session, keyspaceName string) ([]MaterializedViewMetadata, error) {
@@ -981,63 +1162,16 @@ func getMaterializedViewsMetadata(session *Session, keyspaceName string) ([]Mate
 	}
 	var tableName = "system_schema.views"
 	stmt := fmt.Sprintf(`
-		SELECT
-			view_name,
-			base_table_id,
-			base_table_name,
-			bloom_filter_fp_chance,
-			caching,
-			comment,
-			compaction,
-			compression,
-			crc_check_chance,
-			dclocal_read_repair_chance,
-			default_time_to_live,
-			extensions,
-			gc_grace_seconds,
-			id,
-			include_all_columns,
-			max_index_interval,
-			memtable_flush_period_in_ms,
-			min_index_interval,
-			read_repair_chance,
-			speculative_retry
+		SELECT *
 		FROM %s
 		WHERE keyspace_name = ?`, tableName)
 
 	var materializedViews []MaterializedViewMetadata
 
-	rows := session.control.query(stmt, keyspaceName).Scanner()
-	for rows.Next() {
-		materializedView := MaterializedViewMetadata{Keyspace: keyspaceName}
-		err := rows.Scan(&materializedView.Name,
-			&materializedView.BaseTableId,
-			&materializedView.baseTableName,
-			&materializedView.BloomFilterFpChance,
-			&materializedView.Caching,
-			&materializedView.Comment,
-			&materializedView.Compaction,
-			&materializedView.Compression,
-			&materializedView.CrcCheckChance,
-			&materializedView.DcLocalReadRepairChance,
-			&materializedView.DefaultTimeToLive,
-			&materializedView.Extensions,
-			&materializedView.GcGraceSeconds,
-			&materializedView.Id,
-			&materializedView.IncludeAllColumns,
-			&materializedView.MaxIndexInterval,
-			&materializedView.MemtableFlushPeriodInMs,
-			&materializedView.MinIndexInterval,
-			&materializedView.ReadRepairChance,
-			&materializedView.SpeculativeRetry,
-		)
-		if err != nil {
-			return nil, err
-		}
-		materializedViews = append(materializedViews, materializedView)
-	}
+	iter := session.control.query(stmt, keyspaceName)
 
-	if err := rows.Err(); err != nil {
+	materializedViews, err := parseSystemSchemaViews(iter)
+	if err != nil {
 		return nil, err
 	}
 
@@ -1084,10 +1218,10 @@ func getFunctionsMetadata(session *Session, keyspaceName string) ([]FunctionMeta
 		if err != nil {
 			return nil, err
 		}
-		function.ReturnType = getTypeInfo(returnType, session.logger)
+		function.ReturnType = getTypeInfo(returnType, byte(session.cfg.ProtoVersion), session.logger)
 		function.ArgumentTypes = make([]TypeInfo, len(argumentTypes))
 		for i, argumentType := range argumentTypes {
-			function.ArgumentTypes[i] = getTypeInfo(argumentType, session.logger)
+			function.ArgumentTypes[i] = getTypeInfo(argumentType, byte(session.cfg.ProtoVersion), session.logger)
 		}
 		functions = append(functions, function)
 	}
@@ -1141,11 +1275,11 @@ func getAggregatesMetadata(session *Session, keyspaceName string) ([]AggregateMe
 		if err != nil {
 			return nil, err
 		}
-		aggregate.ReturnType = getTypeInfo(returnType, session.logger)
-		aggregate.StateType = getTypeInfo(stateType, session.logger)
+		aggregate.ReturnType = getTypeInfo(returnType, byte(session.cfg.ProtoVersion), session.logger)
+		aggregate.StateType = getTypeInfo(stateType, byte(session.cfg.ProtoVersion), session.logger)
 		aggregate.ArgumentTypes = make([]TypeInfo, len(argumentTypes))
 		for i, argumentType := range argumentTypes {
-			aggregate.ArgumentTypes[i] = getTypeInfo(argumentType, session.logger)
+			aggregate.ArgumentTypes[i] = getTypeInfo(argumentType, byte(session.cfg.ProtoVersion), session.logger)
 		}
 		aggregates = append(aggregates, aggregate)
 	}
@@ -1162,6 +1296,7 @@ type typeParser struct {
 	input  string
 	index  int
 	logger StdLogger
+	proto  byte
 }
 
 // the type definition parser result
@@ -1173,8 +1308,8 @@ type typeParserResult struct {
 }
 
 // Parse the type definition used for validator and comparator schema data
-func parseType(def string, logger StdLogger) typeParserResult {
-	parser := &typeParser{input: def, logger: logger}
+func parseType(def string, protoVer byte, logger StdLogger) typeParserResult {
+	parser := &typeParser{input: def, proto: protoVer, logger: logger}
 	return parser.parse()
 }
 
@@ -1185,6 +1320,9 @@ const (
 	LIST_TYPE       = "org.apache.cassandra.db.marshal.ListType"
 	SET_TYPE        = "org.apache.cassandra.db.marshal.SetType"
 	MAP_TYPE        = "org.apache.cassandra.db.marshal.MapType"
+	UDT_TYPE        = "org.apache.cassandra.db.marshal.UserType"
+	TUPLE_TYPE      = "org.apache.cassandra.db.marshal.TupleType"
+	VECTOR_TYPE     = "org.apache.cassandra.db.marshal.VectorType"
 )
 
 // represents a class specification in the type def AST
@@ -1193,6 +1331,7 @@ type typeParserClassNode struct {
 	params []typeParserParamNode
 	// this is the segment of the input string that defined this node
 	input string
+	proto byte
 }
 
 // represents a class parameter in the type def AST
@@ -1212,6 +1351,7 @@ func (t *typeParser) parse() typeParserResult {
 				NativeType{
 					typ:    TypeCustom,
 					custom: t.input,
+					proto:  t.proto,
 				},
 			},
 			reversed:    []bool{false},
@@ -1289,7 +1429,8 @@ func (class *typeParserClassNode) asTypeInfo() TypeInfo {
 		elem := class.params[0].class.asTypeInfo()
 		return CollectionType{
 			NativeType: NativeType{
-				typ: TypeList,
+				typ:   TypeList,
+				proto: class.proto,
 			},
 			Elem: elem,
 		}
@@ -1298,7 +1439,8 @@ func (class *typeParserClassNode) asTypeInfo() TypeInfo {
 		elem := class.params[0].class.asTypeInfo()
 		return CollectionType{
 			NativeType: NativeType{
-				typ: TypeSet,
+				typ:   TypeSet,
+				proto: class.proto,
 			},
 			Elem: elem,
 		}
@@ -1308,7 +1450,8 @@ func (class *typeParserClassNode) asTypeInfo() TypeInfo {
 		elem := class.params[1].class.asTypeInfo()
 		return CollectionType{
 			NativeType: NativeType{
-				typ: TypeMap,
+				typ:   TypeMap,
+				proto: class.proto,
 			},
 			Key:  key,
 			Elem: elem,
@@ -1316,7 +1459,7 @@ func (class *typeParserClassNode) asTypeInfo() TypeInfo {
 	}
 
 	// must be a simple type or custom type
-	info := NativeType{typ: getApacheCassandraType(class.name)}
+	info := NativeType{typ: getApacheCassandraType(class.name), proto: class.proto}
 	if info.typ == TypeCustom {
 		// add the entire class definition
 		info.custom = class.input
@@ -1346,6 +1489,7 @@ func (t *typeParser) parseClassNode() (node *typeParserClassNode, ok bool) {
 		name:   name,
 		params: params,
 		input:  t.input[startIndex:endIndex],
+		proto:  t.proto,
 	}
 	return node, true
 }

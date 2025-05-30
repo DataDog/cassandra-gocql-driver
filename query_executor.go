@@ -1,8 +1,33 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Content before git sha 34fdeebefcbf183ed7f916f931aa0586fdaa1b40
+ * Copyright (c) 2016, The Gocql authors,
+ * provided under the BSD-3-Clause License.
+ * See the NOTICE file distributed with this work for additional information.
+ */
+
 package gocql
 
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -17,6 +42,7 @@ type ExecutableQuery interface {
 	Keyspace() string
 	Table() string
 	IsIdempotent() bool
+	GetHostID() string
 
 	withContext(context.Context) ExecutableQuery
 
@@ -59,12 +85,34 @@ func (q *queryExecutor) speculate(ctx context.Context, qry ExecutableQuery, sp S
 }
 
 func (q *queryExecutor) executeQuery(qry ExecutableQuery) (*Iter, error) {
-	hostIter := q.policy.Pick(qry)
+	var hostIter NextHost
+
+	// check if the host id is specified for the query,
+	// if it is, the query should be executed at the corresponding host.
+	if hostID := qry.GetHostID(); hostID != "" {
+		host, ok := q.pool.session.ring.getHost(hostID)
+		if !ok {
+			return nil, ErrNoConnections
+		}
+		var returnedHostOnce int32 = 0
+		hostIter = func() SelectedHost {
+			if atomic.CompareAndSwapInt32(&returnedHostOnce, 0, 1) {
+				return (*selectedHost)(host)
+			}
+			return nil
+		}
+	}
+
+	// if host is not specified for the query,
+	// then a host will be picked by HostSelectionPolicy
+	if hostIter == nil {
+		hostIter = q.policy.Pick(qry)
+	}
 
 	// check if the query is not marked as idempotent, if
 	// it is, we force the policy to NonSpeculative
 	sp := qry.speculativeExecutionPolicy()
-	if !qry.IsIdempotent() || sp.Attempts() == 0 {
+	if qry.GetHostID() != "" || !qry.IsIdempotent() || sp.Attempts() == 0 {
 		return q.do(qry.Context(), qry, hostIter), nil
 	}
 
@@ -141,27 +189,39 @@ func (q *queryExecutor) do(ctx context.Context, qry ExecutableQuery, hostIter Ne
 		}
 
 		// Exit if the query was successful
-		// or no retry policy defined or retry attempts were reached
-		if iter.err == nil || rt == nil || !rt.Attempt(qry) {
+		// or query is not idempotent or no retry policy defined
+		if iter.err == nil || !qry.IsIdempotent() || rt == nil {
 			return iter
 		}
-		lastErr = iter.err
+
+		attemptsReached := !rt.Attempt(qry)
+		retryType := rt.GetRetryType(iter.err)
+
+		var stopRetries bool
 
 		// If query is unsuccessful, check the error with RetryPolicy to retry
-		switch rt.GetRetryType(iter.err) {
+		switch retryType {
 		case Retry:
 			// retry on the same host
-			continue
-		case Rethrow, Ignore:
-			return iter
 		case RetryNextHost:
 			// retry on the next host
 			selectedHost = hostIter()
-			continue
+		case Ignore:
+			iter.err = nil
+			stopRetries = true
+		case Rethrow:
+			stopRetries = true
 		default:
 			// Undefined? Return nil and error, this will panic in the requester
 			return &Iter{err: ErrUnknownRetryType}
 		}
+
+		if stopRetries || attemptsReached {
+			return iter
+		}
+
+		lastErr = iter.err
+		continue
 	}
 
 	if lastErr != nil {
