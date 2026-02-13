@@ -18,10 +18,10 @@
 module github.com/gocql/gocql
 
 require (
-	github.com/golang/snappy v0.0.3
+	github.com/golang/snappy v0.0.4
 	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed
-	github.com/pierrec/lz4/v4 v4.1.8
-	github.com/stretchr/testify v1.9.0
+	github.com/pierrec/lz4/v4 v4.1.25
+	github.com/stretchr/testify v1.11.1
 	gopkg.in/inf.v0 v0.9.1
 )
 
